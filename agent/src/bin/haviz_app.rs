@@ -735,12 +735,14 @@ async fn zalo_conversations_handler() -> axum::response::Json<serde_json::Value>
             // Skip if it starts with "Bạn:" (it's a preview, not a name)
             if(name.indexOf('Bạn:')===0)return;
 
-            // Check: is this element inside a conversation item (not nav)?
-            // Nav items have class 'lb-tab-title', conversation names don't
+            // Must be a conversation name, not nav or preview
             var cls=(typeof el.className==='string')?el.className:'';
+            // Skip nav tab titles
             if(cls.indexOf('lb-tab-title')>=0)return;
+            // Skip message preview labels (class contains 'conv-dbname' or 'subtitle')
+            if(cls.indexOf('conv-dbname')>=0||cls.indexOf('subtitle')>=0)return;
 
-            // Check ancestor for conversation-related class
+            // Must have ancestor with 'conv' class (conversation list item)
             var isConv=false;
             var ancestor=el.parentElement;
             for(var i=0;i<8&&ancestor;i++){
@@ -751,6 +753,15 @@ async fn zalo_conversations_handler() -> axum::response::Json<serde_json::Value>
                 ancestor=ancestor.parentElement;
             }
             if(!isConv)return;
+
+            // Filter: conversation names are short, not message content
+            // Message content usually has spaces/punctuation, names don't have many
+            // Also: if this .truncate has a sibling .truncate (preview), only take the first one
+            var parent=el.parentElement;
+            if(parent){
+                var siblings=parent.querySelectorAll('.truncate');
+                if(siblings.length>1&&siblings[0]!==el)return;
+            }
 
             seen.add(name);
             convs.push({name:name,time:'',preview:'',sender:''});
