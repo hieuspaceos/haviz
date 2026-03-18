@@ -137,6 +137,7 @@ fn main() {
         println!("║  3. Đọc tin nhắn conversation đang mở    ║");
         println!("║  4. Xem thông tin trang hiện tại          ║");
         println!("║  5. Chụp screenshot                       ║");
+        println!("║  6. Dump DOM (debug classes)              ║");
         println!("║  0. Thoát                                ║");
         println!("╚══════════════════════════════════════════╝");
         print!("> ");
@@ -149,6 +150,7 @@ fn main() {
             "3" => read_messages(&tab),
             "4" => page_info(&tab),
             "5" => take_screenshot(&tab, &profile_dir),
+            "6" => dump_dom(&tab),
             "0" | "q" | "quit" | "exit" => {
                 println!("Bye!");
                 break;
@@ -300,54 +302,68 @@ fn get_clickable_items_count(tab: &headless_chrome::Tab) -> usize {
 }
 
 fn list_clickable_items(tab: &headless_chrome::Tab, label: &str) -> usize {
-    let js = r#"
+    // First dump DOM to understand Zalo's actual structure
+    let dump_js = r#"
     (() => {
+        // Strategy: find all visible list items in sidebar/search results
+        // Zalo uses .truncate for names — walk up to find the clickable row
         const results = [];
+        const seen = new Set();
 
-        // Primary: conversation/contact items
-        const items = document.querySelectorAll(
-            '[class*="conv-item"], [class*="contact-item"], [class*="chat-item"],
-             [class*="thread"], [class*="search-result"], [class*="suggest"]'
-        );
+        // Method 1: Find .truncate elements and get their clickable ancestor
+        document.querySelectorAll('.truncate').forEach((el, i) => {
+            if (i >= 30) return;
+            const text = el.textContent?.trim();
+            if (!text || seen.has(text)) return;
+            seen.add(text);
 
-        if (items.length > 0) {
-            items.forEach((item, i) => {
-                if (i >= 30) return;
-                const name = item.querySelector('.truncate, [class*="name"], [class*="title"]');
-                const preview = item.querySelector('[class*="preview"], [class*="last-msg"], [class*="subtitle"]');
-                const time = item.querySelector('[class*="time"], [class*="date"]');
-                const unread = item.querySelector('[class*="unread"], [class*="badge"]');
-                results.push({
-                    name: name?.textContent?.trim() || item.textContent?.trim()?.slice(0, 40) || 'Unknown',
-                    preview: preview?.textContent?.trim() || '',
-                    time: time?.textContent?.trim() || '',
-                    unread: unread?.textContent?.trim() || '',
-                });
+            // Walk up to find the list item row (usually 2-4 levels up)
+            let row = el;
+            for (let j = 0; j < 6; j++) {
+                if (!row.parentElement) break;
+                row = row.parentElement;
+                // Stop at elements that look like list items (have siblings with same structure)
+                const siblings = row.parentElement?.children;
+                if (siblings && siblings.length > 1) {
+                    // Check if siblings also contain .truncate = this is the list item level
+                    let siblingHasTruncate = false;
+                    for (const sib of siblings) {
+                        if (sib !== row && sib.querySelector('.truncate')) {
+                            siblingHasTruncate = true;
+                            break;
+                        }
+                    }
+                    if (siblingHasTruncate) break;
+                }
+            }
+
+            // Get additional info from the row
+            const allTexts = [];
+            row.querySelectorAll('*').forEach(child => {
+                if (child.children.length === 0 && child.textContent?.trim()) {
+                    const t = child.textContent.trim();
+                    if (t !== text && t.length < 100 && t.length > 0) {
+                        allTexts.push(t);
+                    }
+                }
             });
-        }
 
-        // Fallback: .truncate elements (clickable parents)
-        if (results.length === 0) {
-            document.querySelectorAll('.truncate').forEach((el, i) => {
-                if (i >= 30) return;
-                // Get sibling/parent info
-                const parent = el.closest('[class*="conv"], [class*="contact"], [class*="item"]') || el.parentElement;
-                const preview = parent?.querySelector('[class*="preview"], [class*="last-msg"], [class*="subtitle"]');
-                const time = parent?.querySelector('[class*="time"], [class*="date"]');
-                results.push({
-                    name: el.textContent?.trim() || 'Unknown',
-                    preview: preview?.textContent?.trim() || '',
-                    time: time?.textContent?.trim() || '',
-                    unread: '',
-                });
+            results.push({
+                name: text,
+                preview: allTexts.slice(0, 2).join(' | '),
+                time: '',
+                unread: '',
+                // Store row's tag and class for debugging
+                rowTag: row.tagName,
+                rowClass: (typeof row.className === 'string' ? row.className : '').slice(0, 60),
             });
-        }
+        });
 
         return JSON.stringify(results);
     })()
     "#;
 
-    match tab.evaluate(js, false) {
+    match tab.evaluate(dump_js, false) {
         Ok(result) => {
             let json_str = result.value.as_ref().and_then(|v| v.as_str()).unwrap_or("[]");
             let items: Vec<serde_json::Value> = serde_json::from_str(json_str).unwrap_or_default();
@@ -385,42 +401,37 @@ fn click_item_by_index(tab: &headless_chrome::Tab, idx: usize) {
     }
     let js_idx = idx - 1; // 0-based
 
-    // Step 1: Get the bounding rect of the element via JS
+    // Get coordinates of the .truncate element itself — click directly on the name text
     let rect_js = format!(r#"
     (() => {{
-        let items = document.querySelectorAll(
-            '[class*="conv-item"], [class*="contact-item"], [class*="chat-item"],
-             [class*="thread"], [class*="search-result"], [class*="suggest"]'
-        );
-
-        if (items.length === 0) {{
-            const truncates = document.querySelectorAll('.truncate');
-            const clickables = [];
-            truncates.forEach(el => {{
-                const parent = el.closest('[class*="conv"], [class*="contact"], [class*="item"]') || el.parentElement;
-                if (parent) clickables.push(parent);
-                else clickables.push(el);
-            }});
-            items = clickables;
+        const truncates = document.querySelectorAll('.truncate');
+        const seen = new Set();
+        const unique = [];
+        for (const el of truncates) {{
+            const text = el.textContent?.trim();
+            if (text && !seen.has(text)) {{
+                seen.add(text);
+                unique.push(el);
+            }}
         }}
 
-        if ({idx} >= items.length) {{
-            return JSON.stringify({{ ok: false, error: "Index out of range: " + items.length + " items" }});
+        if ({idx} >= unique.length) {{
+            return JSON.stringify({{ ok: false, error: "Index " + {idx} + " out of range, only " + unique.length + " items" }});
         }}
 
-        const target = items[{idx}];
-        // Scroll into view first
+        const target = unique[{idx}];
         target.scrollIntoView({{ block: 'center' }});
 
+        // Small delay for scroll to settle
         const rect = target.getBoundingClientRect();
-        const name = target.querySelector('.truncate, [class*="name"]')?.textContent?.trim()
-                  || target.textContent?.trim()?.slice(0, 30)
-                  || 'Unknown';
+        const name = target.textContent?.trim() || 'Unknown';
 
         return JSON.stringify({{
             ok: true,
             x: Math.round(rect.x + rect.width / 2),
             y: Math.round(rect.y + rect.height / 2),
+            w: Math.round(rect.width),
+            h: Math.round(rect.height),
             name: name
         }});
     }})()
@@ -643,6 +654,101 @@ fn take_screenshot(tab: &headless_chrome::Tab, dir: &PathBuf) {
             }
         }
         Err(e) => eprintln!("  ❌ Screenshot failed: {}", e),
+    }
+}
+
+fn dump_dom(tab: &headless_chrome::Tab) {
+    println!("\n🔍 Dumping sidebar DOM structure...\n");
+    let js = r#"
+    (() => {
+        // Find the sidebar / contact list area
+        const sidebar = document.querySelector('[class*="sidebar"], [class*="contact-list"], [class*="conv-list"]')
+                     || document.querySelector('nav')
+                     || document.body;
+
+        // Dump first 5 .truncate elements with their ancestor chain
+        const truncates = document.querySelectorAll('.truncate');
+        const dumps = [];
+
+        for (let i = 0; i < Math.min(truncates.length, 5); i++) {
+            const el = truncates[i];
+            const chain = [];
+            let node = el;
+            for (let j = 0; j < 8; j++) {
+                const tag = node.tagName?.toLowerCase() || '?';
+                const cls = (typeof node.className === 'string' ? node.className : '').trim();
+                const id = node.id || '';
+                chain.push({
+                    tag,
+                    class: cls.slice(0, 80),
+                    id,
+                    childCount: node.children?.length || 0,
+                    text: (node === el) ? el.textContent?.trim()?.slice(0, 30) : '',
+                });
+                if (!node.parentElement) break;
+                node = node.parentElement;
+            }
+            dumps.push(chain);
+        }
+
+        // Also get all unique class names in sidebar area
+        const allClasses = new Set();
+        sidebar.querySelectorAll('[class]').forEach(el => {
+            if (typeof el.className === 'string') {
+                el.className.split(' ').forEach(c => {
+                    if (c.trim()) allClasses.add(c.trim());
+                });
+            }
+        });
+
+        return JSON.stringify({
+            truncateCount: truncates.length,
+            ancestorChains: dumps,
+            sidebarClasses: [...allClasses].filter(c =>
+                c.includes('conv') || c.includes('contact') || c.includes('chat') ||
+                c.includes('item') || c.includes('list') || c.includes('sidebar') ||
+                c.includes('search') || c.includes('result') || c.includes('row') ||
+                c.includes('friend') || c.includes('group') || c.includes('thread')
+            ).slice(0, 30),
+        });
+    })()
+    "#;
+
+    match tab.evaluate(js, false) {
+        Ok(r) => {
+            let json_str = r.value.as_ref().and_then(|v| v.as_str()).unwrap_or("{}");
+            let data: serde_json::Value = serde_json::from_str(json_str).unwrap_or_default();
+
+            println!("  .truncate elements: {}", data["truncateCount"]);
+            println!("\n  Relevant CSS classes in sidebar:");
+            if let Some(classes) = data["sidebarClasses"].as_array() {
+                for c in classes {
+                    println!("    .{}", c.as_str().unwrap_or(""));
+                }
+            }
+
+            println!("\n  Ancestor chains (first 5 .truncate elements):");
+            if let Some(chains) = data["ancestorChains"].as_array() {
+                for (i, chain) in chains.iter().enumerate() {
+                    println!("\n  --- .truncate #{} ---", i + 1);
+                    if let Some(nodes) = chain.as_array() {
+                        for (depth, node) in nodes.iter().enumerate() {
+                            let tag = node["tag"].as_str().unwrap_or("?");
+                            let cls = node["class"].as_str().unwrap_or("");
+                            let children = node["childCount"].as_u64().unwrap_or(0);
+                            let text = node["text"].as_str().unwrap_or("");
+                            let indent = "    ".repeat(depth);
+                            if !text.is_empty() {
+                                println!("  {}<{}> class=\"{}\" children={} text=\"{}\"", indent, tag, cls, children, text);
+                            } else {
+                                println!("  {}<{}> class=\"{}\" children={}", indent, tag, cls, children);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Err(e) => eprintln!("  ❌ {}", e),
     }
 }
 
