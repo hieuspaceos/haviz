@@ -185,9 +185,10 @@
     {#if aiDraft}
       <div class="border border-purple-500/30 rounded-lg p-3 bg-purple-500/10 mb-2">
         <textarea
+          id="draftTextarea"
           bind:value={aiDraft}
           rows="3"
-          class="w-full bg-transparent border-none text-sm text-[var(--text-primary)] focus:outline-none resize-none"
+          class="w-full bg-transparent border border-transparent focus:border-purple-500/50 rounded text-sm text-[var(--text-primary)] focus:outline-none resize-none p-1"
         ></textarea>
         <div class="flex gap-2 mt-2">
           <button
@@ -196,6 +197,12 @@
             on:click={approveDraft}
           >
             {sending ? 'Sending...' : 'Approve & Send'}
+          </button>
+          <button
+            class="px-3 py-1.5 text-xs rounded bg-[var(--warning)] text-black hover:opacity-90"
+            on:click={() => { document.querySelector('#draftTextarea')?.focus(); addLog('Editing draft...'); }}
+          >
+            Edit
           </button>
           <button
             class="px-3 py-1.5 text-xs rounded bg-purple-600 text-white hover:opacity-90"
