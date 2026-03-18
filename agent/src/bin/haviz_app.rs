@@ -678,38 +678,86 @@ async fn zalo_messages_handler() -> axum::response::Json<serde_json::Value> {
     // Clear previous data
     *ZALO_MESSAGES.lock().unwrap() = None;
 
-    // Inject JS → extract messages → send via IPC (window.ipc.postMessage)
-    // IPC bypasses CORS entirely — wry built-in mechanism
+    // Inject JS → extract ONLY chat messages → send via IPC
     let _ = eval_zalo_js(r#"(function(){
         var messages=[];
 
-        // Scan all leaf text nodes deeply nested (chat content)
+        // Skip list: UI labels, nav, emoji, system text
+        var skip=new Set([
+            'Tin nhắn','Danh bạ','Zalo Cloud','My Documents','Công cụ','Cài đặt',
+            'Tìm kiếm','Tất cả','Chưa đọc','Phân loại','Đóng','Tải ngay',
+            'Gửi nhanh','Đồng bộ ngay','Hôm nay','Hôm qua','Đã gửi','Đã xem',
+            'Xem trước khi gửi','Thả File hoặc Ảnh vào đây để gửi nhanh',
+            'Thả File hoặc Ảnh vào đây để xem lại trước khi gửi',
+            'phút','giờ','ngày','thành viên','Nodaking',
+            'Sử dụng Zalo PC để lưu trữ dài hạn và dễ dàng tìm kiếm đầy đủ dữ liệu trò chuyện của bạn.',
+            'Hình ảnh','Video','File','Link','Bình chọn',
+        ]);
+        // Emoji/sticker patterns
+        var emojiRe=/^[\/:][a-z-]+$|^[\/:][a-z][\w-]*$/;
+        var timeRe=/^\d{1,2}:\d{2}$/;
+        var shortRe=/^\d+$/;
+        var memberRe=/^\d+\s*thành viên$/;
+
+        // Scan TRUE leaf elements: SPAN, DIV, P only (skip STYLE, SCRIPT, etc)
+        var validTags=new Set(['SPAN','DIV','P','A','EM','STRONG','B','I']);
         var all=document.querySelectorAll('*');
         for(var i=0;i<all.length;i++){
             var el=all[i];
-            if(el.children.length>3)continue;
+            if(el.children.length>0)continue;
+            if(!validTags.has(el.tagName))continue;
             var text=el.textContent?el.textContent.trim():'';
-            if(text.length<1||text.length>500)continue;
-            if(el.children.length>0){
-                var childText='';
-                for(var c=0;c<el.children.length;c++)childText+=(el.children[c].textContent||'');
-                if(childText.trim()===text)continue;
-            }
+            if(text.length<2||text.length>500)continue;
+            // Skip known UI text
+            if(skip.has(text))continue;
+            // Skip emoji
+            if(emojiRe.test(text))continue;
+            // Skip time stamps
+            if(timeRe.test(text))continue;
+            // Skip bare numbers
+            if(shortRe.test(text))continue;
+            // Skip "3 thành viên" etc
+            if(memberRe.test(text))continue;
+            // Skip very short (2 chars or less)
+            if(text.length<=2)continue;
+            // Skip sticker reactions like ":>" ":o"
+            if(text.length<=3&&/^[:;]/.test(text))continue;
+
             var cls=(typeof el.className==='string')?el.className:'';
-            var depth=0;var p=el;
-            while(p&&p!==document.body){depth++;p=p.parentElement;}
-            if(depth<8)continue;
-            messages.push({
-                content:text,
-                class:cls.substring(0,60),
-                tag:el.tagName,
-                depth:depth
-            });
+            // Skip sidebar/nav classes
+            if(cls.indexOf('lb-tab')>=0||cls.indexOf('banner')>=0||cls.indexOf('fake-text')>=0)continue;
+
+            // Determine if sender or message
+            var sender='';
+            var content=text;
+            if(cls.indexOf('conv-dbname')>=0||text.endsWith(':')){
+                sender=text.replace(/:$/,'');
+                continue; // sender line, not message
+            }
+
+            // Clean: remove emoji reactions concatenated to text
+            content=content.replace(/\/?-strong/g,'').replace(/\/?-heart/g,'')
+                .replace(/:>/g,'').replace(/:o/g,'').replace(/:-\(\(/g,'').replace(/:-h/g,'')
+                .replace(/\d{1,2}:\d{2}/g,'').replace(/Đã gửi/g,'').replace(/Đã xem/g,'')
+                .trim();
+            if(!content||content.length<2)continue;
+
+            messages.push({sender:sender,content:content,class:cls.substring(0,40)});
         }
 
-        // Send via wry IPC — no CORS issues
+        // Deduplicate
+        var seen=new Set();
+        var unique=[];
+        for(var j=messages.length-1;j>=0;j--){
+            var key=messages[j].content;
+            if(!seen.has(key)){
+                seen.add(key);
+                unique.unshift(messages[j]);
+            }
+        }
+
         if(window.ipc&&window.ipc.postMessage){
-            window.ipc.postMessage(JSON.stringify(messages.slice(-100)));
+            window.ipc.postMessage(JSON.stringify(unique.slice(-20)));
         }
     })();"#);
 
