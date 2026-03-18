@@ -274,33 +274,36 @@ async fn zalo_search_handler(
     let _ = eval_zalo_js(&js_type);
     std::thread::sleep(std::time::Duration::from_millis(200));
 
-    // Step 2: Type each character + space trick (triggers Zalo's search)
+    // Step 2: Simulate real keyboard typing using InputEvent + KeyboardEvent
+    // Zalo React listens for these specific events, not just input.value change
     let js_set = format!(
         r#"(function(){{
             var inp=document.querySelector('input[type="text"]');
             if(!inp)inp=document.querySelector('input');
             if(!inp)return;
             inp.focus();
+            inp.value='';
+            // Use native input setter to bypass React's synthetic events
+            var nativeInputValueSetter=Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,'value').set;
             var text='{}';
-            // Simulate typing character by character
             for(var i=0;i<text.length;i++){{
-                inp.value=text.substring(0,i+1);
-                inp.dispatchEvent(new Event('input',{{bubbles:true}}));
+                var char=text[i];
+                // KeyboardEvent for keydown
+                inp.dispatchEvent(new KeyboardEvent('keydown',{{key:char,code:'Key'+char.toUpperCase(),bubbles:true}}));
+                // Set value using native setter (React detects this)
+                nativeInputValueSetter.call(inp,text.substring(0,i+1));
+                // InputEvent (React uses this for controlled inputs)
+                inp.dispatchEvent(new InputEvent('input',{{bubbles:true,data:char,inputType:'insertText'}}));
+                // KeyboardEvent for keyup
+                inp.dispatchEvent(new KeyboardEvent('keyup',{{key:char,code:'Key'+char.toUpperCase(),bubbles:true}}));
             }}
-            // Add space then remove it (triggers search in Zalo)
-            inp.value=text+' ';
-            inp.dispatchEvent(new Event('input',{{bubbles:true}}));
-            setTimeout(function(){{
-                inp.value=text;
-                inp.dispatchEvent(new Event('input',{{bubbles:true}}));
-            }},100);
         }})();"#,
         query.replace('\\', "\\\\").replace('"', "\\\"").replace('\'', "\\'")
     );
     let _ = eval_zalo_js(&js_set);
 
-    // Step 3: Wait for search results to appear
-    std::thread::sleep(std::time::Duration::from_secs(2));
+    // Step 3: Wait for Zalo to process search
+    std::thread::sleep(std::time::Duration::from_millis(2500));
 
     // Step 4: Press Enter to open first result
     if auto_enter {
