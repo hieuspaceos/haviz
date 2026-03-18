@@ -1,204 +1,203 @@
-// Haviz — Read Zalo Web messages from any browser via AX API
-// Same approach as Zalo Desktop reader but targets browser window
+// Haviz — Read Zalo Web conversations from browser via AX API
+// Validated structure (Chrome, chat.zalo.me):
+//   depth 23: conversation name, timestamp parts
+//   depth 25: sender prefix ("Bạn:"), message preview
 // Compile: swiftc zalo_web_reader.swift -o zalo_web_reader -framework Cocoa -framework ApplicationServices
 // Usage: ./zalo_web_reader [browser_name]
-//   browser_name: "Google Chrome" (default), "Safari", "Arc", "Microsoft Edge", "Firefox"
 
 import Cocoa
 import ApplicationServices
 
-// Get browser name from args or default to Chrome
 let browserName = CommandLine.arguments.count > 1
     ? CommandLine.arguments[1...].joined(separator: " ")
     : "Google Chrome"
 
-// Find browser process
+// Find browser
 let apps = NSWorkspace.shared.runningApplications.filter { $0.localizedName == browserName }
-guard let app = apps.first else {
-    fputs("browser_not_running:\(browserName)\n", stderr)
-    exit(1)
-}
+guard let app = apps.first else { fputs("browser_not_running:\(browserName)\n", stderr); exit(1) }
 
 let appRef = AXUIElementCreateApplication(app.processIdentifier)
 var windowsRef: CFTypeRef?
 AXUIElementCopyAttributeValue(appRef, kAXWindowsAttribute as CFString, &windowsRef)
+guard let windows = windowsRef as? [AXUIElement], !windows.isEmpty else { fputs("no_windows\n", stderr); exit(1) }
 
-guard let windows = windowsRef as? [AXUIElement], !windows.isEmpty else {
-    fputs("no_windows\n", stderr)
-    exit(1)
-}
-
-// Find window with Zalo tab
+// Find Zalo tab
 var zaloWindow: AXUIElement? = nil
 var windowTitle = ""
 for window in windows {
     var title: CFTypeRef?
     AXUIElementCopyAttributeValue(window, kAXTitleAttribute as CFString, &title)
-    let titleStr = (title as? String) ?? ""
-    if titleStr.lowercased().contains("zalo") {
-        zaloWindow = window
-        windowTitle = titleStr
-        break
-    }
+    let t = (title as? String) ?? ""
+    if t.lowercased().contains("zalo") { zaloWindow = window; windowTitle = t; break }
+}
+guard let target = zaloWindow else { fputs("zalo_tab_not_found\n", stderr); exit(1) }
+
+// Collect all AXStaticText by depth
+struct TextItem {
+    let depth: Int
+    let value: String
 }
 
-guard let targetWindow = zaloWindow else {
-    fputs("zalo_tab_not_found\n", stderr)
-    exit(1)
-}
-
-// Collect messages — same depth-based approach as Zalo Desktop
-struct ChatMessage {
-    var sender: String
-    var content: String
-    var timestamp: String
-}
-
-var messages: [ChatMessage] = []
-var conversationName: String? = nil
-var contactNames: [String] = []
-
-// Track texts by depth for message reconstruction
-var depthTexts: [(depth: Int, role: String, value: String)] = []
+var textItems: [TextItem] = []
 
 func scan(_ element: AXUIElement, depth: Int = 0) {
-    if depth > 25 { return }
+    if depth > 26 { return }
 
     var role: CFTypeRef?
     var value: CFTypeRef?
-    var desc: CFTypeRef?
     AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &role)
     AXUIElementCopyAttributeValue(element, kAXValueAttribute as CFString, &value)
-    AXUIElementCopyAttributeValue(element, kAXDescriptionAttribute as CFString, &desc)
 
     let roleStr = (role as? String) ?? ""
     let valueStr = (value as? String) ?? ""
-    let descStr = (desc as? String) ?? ""
 
-    // Collect static text elements at various depths
-    if roleStr == "AXStaticText" && !valueStr.isEmpty && valueStr.count > 0 {
-        // Filter out UI labels
-        let uiLabels = ["Tìm kiếm", "Tất cả", "Chưa đọc", "Phân loại",
-                       "Tin nhắn", "Danh bạ", "Công cụ", "Zalo Cloud",
-                       "My Documents", "Online", "Offline", "Đóng"]
-        let isUI = uiLabels.contains(where: { valueStr == $0 })
-
-        if !isUI {
-            depthTexts.append((depth: depth, role: roleStr, value: valueStr))
-        }
-    }
-
-    // Check description blocks (contain grouped messages with timestamps)
-    if !descStr.isEmpty && descStr.count > 20 {
-        let hasTime = descStr.range(of: "\\d{1,2}:\\d{2}", options: .regularExpression) != nil
-        if hasTime {
-            // Parse desc block for messages
-            parseDescBlock(descStr)
-        }
+    if roleStr == "AXStaticText" {
+        textItems.append(TextItem(depth: depth, value: valueStr))
     }
 
     var children: CFTypeRef?
     AXUIElementCopyAttributeValue(element, kAXChildrenAttribute as CFString, &children)
     if let kids = children as? [AXUIElement] {
-        for kid in kids.prefix(300) {
+        for kid in kids.prefix(500) {
             scan(kid, depth: depth + 1)
         }
     }
 }
 
-let timeRegex = try! NSRegularExpression(pattern: "^\\d{1,2}:\\d{2}$")
+scan(target)
 
-func isTimestamp(_ str: String) -> Bool {
-    let range = NSRange(str.startIndex..., in: str)
-    return timeRegex.firstMatch(in: str, range: range) != nil
+// Parse conversation list from depth-based structure
+// Pattern: depth 23 = conv name | timestamp parts | empty strings between convs
+//          depth 25 = sender prefix | message preview
+struct Conversation {
+    var name: String
+    var timeRaw: String       // "22 phút", "03/03", "1 giờ"
+    var lastSender: String
+    var lastMessage: String
 }
 
-func parseDescBlock(_ desc: String) {
-    // Description blocks in browser AX API often contain all messages in one string
-    // Format varies but timestamps are markers between messages
-    let lines = desc.components(separatedBy: CharacterSet.newlines)
-    var currentSender = "Unknown"
+var conversations: [Conversation] = []
+var currentConv: Conversation? = nil
+var timeNumberBuffer: String? = nil // for "22" + " " + "phút" pattern
 
-    for line in lines {
-        let trimmed = line.trimmingCharacters(in: .whitespaces)
-        if trimmed.isEmpty { continue }
+// UI labels to skip
+let skipValues = Set(["", "Tìm kiếm", "Tất cả", "Chưa đọc", "Phân loại",
+    "Tin nhắn", "Danh bạ", "Công cụ", "Zalo Cloud", "My Documents",
+    "Tải ngay", "Đóng", "Tải Zalo PC để xem đầy đủ tin nhắn"])
 
-        // Try to find timestamp at end
-        if let range = trimmed.range(of: "\\d{1,2}:\\d{2}$", options: .regularExpression) {
-            let time = String(trimmed[range])
-            let content = trimmed[..<range.lowerBound].trimmingCharacters(in: .whitespaces)
-            if !content.isEmpty {
-                messages.append(ChatMessage(sender: currentSender, content: content, timestamp: time))
+let timeUnits = Set(["phút", "giờ", "ngày", "tuần", "tháng"])
+let dateRegex = try! NSRegularExpression(pattern: "^\\d{1,2}/\\d{1,2}$")
+
+func isDate(_ s: String) -> Bool {
+    dateRegex.firstMatch(in: s, range: NSRange(s.startIndex..., in: s)) != nil
+}
+
+func isNumber(_ s: String) -> Bool {
+    s.allSatisfy { $0.isNumber }
+}
+
+// State machine to parse depth-23 and depth-25 elements
+var i = 0
+while i < textItems.count {
+    let item = textItems[i]
+
+    // Skip non-conversation depths and UI chrome
+    if item.depth < 20 || skipValues.contains(item.value) {
+        // Skip known UI text at depth 14, 17, 19 etc
+        if item.depth <= 19 || item.value.count > 80 { i += 1; continue }
+    }
+
+    if item.depth == 23 {
+        let val = item.value
+
+        // Empty string at depth 23 = separator between conversations, or group icon
+        if val.isEmpty || val == " " {
+            i += 1; continue
+        }
+
+        // Check if this is a time number: "22" followed by " " and "phút"
+        if isNumber(val) && val.count <= 2 {
+            // Look ahead for time unit
+            if i + 2 < textItems.count
+                && textItems[i+1].depth == 23 && textItems[i+1].value == " "
+                && textItems[i+2].depth == 23 && timeUnits.contains(textItems[i+2].value) {
+                // This is timestamp: "22 phút"
+                if var conv = currentConv {
+                    conv.timeRaw = "\(val) \(textItems[i+2].value)"
+                    currentConv = conv
+                }
+                i += 3; continue
             }
-        } else if trimmed.count < 40 && trimmed.count > 1 {
-            // Short text without timestamp — likely a sender name
-            currentSender = trimmed
+        }
+
+        // Check if date format "03/03"
+        if isDate(val) {
+            if var conv = currentConv {
+                conv.timeRaw = val
+                currentConv = conv
+            }
+            i += 1; continue
+        }
+
+        // Check for time unit alone (shouldn't happen but safety)
+        if timeUnits.contains(val) { i += 1; continue }
+
+        // Check for reaction emoji like "/-heart"
+        if val.hasPrefix("/-") { i += 1; continue }
+
+        // Otherwise: this is a conversation NAME
+        // Save previous conversation
+        if let conv = currentConv, !conv.name.isEmpty {
+            conversations.append(conv)
+        }
+        currentConv = Conversation(name: val, timeRaw: "", lastSender: "", lastMessage: "")
+
+    } else if item.depth == 25 && currentConv != nil {
+        let val = item.value
+        if val.isEmpty { i += 1; continue }
+
+        // Sender prefix ends with ":" like "Bạn:", "IMA Dương Bích Ngọc:"
+        if val.hasSuffix(":") {
+            currentConv!.lastSender = String(val.dropLast()) // remove ":"
+        } else if val == "Hình ảnh" || val == "Tin nhắn đã được thu hồi" || val == "Cuộc gọi thoại đến" {
+            currentConv!.lastMessage = val
+        } else if !val.isEmpty {
+            // Actual message content
+            if currentConv!.lastMessage.isEmpty {
+                currentConv!.lastMessage = val
+            } else {
+                currentConv!.lastMessage += " " + val
+            }
         }
     }
+
+    i += 1
 }
 
-// Run scan
-scan(targetWindow)
-
-// Also extract contact names from depthTexts
-// In browser Zalo Web, contact names in sidebar are at moderate depths (8-15)
-// Messages are deeper (15+)
-for item in depthTexts {
-    if item.depth >= 6 && item.depth <= 14 && item.value.count < 40 && item.value.count > 1 {
-        if !isTimestamp(item.value) {
-            contactNames.append(item.value)
-        }
-    }
+// Don't forget last conversation
+if let conv = currentConv, !conv.name.isEmpty {
+    conversations.append(conv)
 }
-
-// If no messages from desc blocks, try to reconstruct from depth-based texts
-if messages.isEmpty {
-    var currentTimestamp: String? = nil
-    var currentSender: String? = nil
-
-    for item in depthTexts {
-        if isTimestamp(item.value) {
-            currentTimestamp = item.value
-            currentSender = nil
-        } else if currentTimestamp != nil && item.value.count < 40 && currentSender == nil {
-            currentSender = item.value
-        } else if currentTimestamp != nil && currentSender != nil {
-            messages.append(ChatMessage(
-                sender: currentSender!,
-                content: item.value,
-                timestamp: currentTimestamp!
-            ))
-            currentTimestamp = nil
-            currentSender = nil
-        }
-    }
-}
-
-// Deduplicate contact names
-let uniqueContacts = Array(Set(contactNames))
 
 // Output JSON
-var jsonMessages: [[String: String]] = []
-for msg in messages {
-    jsonMessages.append([
-        "sender": msg.sender,
-        "content": msg.content,
-        "timestamp": msg.timestamp,
+var jsonConvs: [[String: String]] = []
+for conv in conversations {
+    jsonConvs.append([
+        "name": conv.name,
+        "time": conv.timeRaw,
+        "sender": conv.lastSender,
+        "preview": conv.lastMessage,
     ])
 }
 
 let output: [String: Any] = [
     "browser": browserName,
     "window_title": windowTitle,
-    "conversation_name": conversationName ?? NSNull(),
-    "messages": jsonMessages,
-    "contacts": uniqueContacts,
-    "total_text_elements": depthTexts.count,
+    "conversations": jsonConvs,
+    "total_text_elements": textItems.count,
 ]
 
-if let data = try? JSONSerialization.data(withJSONObject: output, options: []),
+if let data = try? JSONSerialization.data(withJSONObject: output, options: [.prettyPrinted]),
    let str = String(data: data, encoding: .utf8) {
     print(str)
-} else {
-    print("{\"browser\":\"\(browserName)\",\"messages\":[],\"contacts\":[],\"total_text_elements\":0}")
 }
