@@ -6,6 +6,8 @@
   let searchResults: any[] = [];
   let messageText = '';
   let sending = false;
+  let chatMessages: any[] = [];
+  let loadingMessages = false;
 
   async function search() {
     if (!searchQuery.trim()) return;
@@ -47,6 +49,19 @@
       addLog('Send failed', 'err');
     }
     sending = false;
+  }
+
+  async function loadMessages() {
+    loadingMessages = true;
+    addLog('Loading messages...');
+    try {
+      const data = await api.zalo.messages();
+      chatMessages = data.messages || [];
+      addLog(`${chatMessages.length} messages loaded`);
+    } catch (e) {
+      addLog('Load messages failed', 'err');
+    }
+    loadingMessages = false;
   }
 
   function handleKey(e: KeyboardEvent) {
@@ -106,6 +121,40 @@
     >
       {sending ? 'Sending...' : 'Send'}
     </button>
+  </div>
+
+  <!-- Chat Messages -->
+  <div>
+    <div class="flex items-center gap-2 mb-2">
+      <h3 class="text-xs font-semibold text-[var(--text-secondary)] uppercase tracking-wide">Chat Messages</h3>
+      <button
+        class="px-3 py-1 text-xs rounded bg-[var(--accent)] text-white hover:opacity-90 disabled:opacity-50"
+        disabled={loadingMessages}
+        on:click={loadMessages}
+      >
+        {loadingMessages ? 'Loading...' : 'Load Messages'}
+      </button>
+    </div>
+
+    {#if chatMessages.length > 0}
+      <div class="max-h-80 overflow-y-auto border border-[var(--border)] rounded-lg p-3 space-y-2 bg-[var(--bg-primary)]">
+        {#each chatMessages as msg}
+          <div class="text-sm">
+            {#if msg.sender}
+              <span class="font-medium text-[var(--accent)]">{msg.sender}</span>
+              {#if msg.time}<span class="text-[10px] text-[var(--text-secondary)] ml-1">{msg.time}</span>{/if}
+              <div class="text-[var(--text-primary)] mt-0.5">{msg.content}</div>
+            {:else}
+              <div class="text-[var(--text-primary)]">{msg.content}</div>
+            {/if}
+          </div>
+        {/each}
+      </div>
+    {:else if !loadingMessages}
+      <div class="text-xs text-[var(--text-secondary)] p-3 border border-[var(--border)] rounded-lg">
+        Open a conversation in Zalo sidebar, then click "Load Messages"
+      </div>
+    {/if}
   </div>
 
   <!-- Screenshot Preview -->

@@ -81,10 +81,17 @@ fn main() {
         .build_as_child(&window)
         .expect("Failed to create dashboard");
 
-    // Right: Zalo Web
+    // Right: Zalo Web — with IPC handler for receiving data from JS
     let sidebar = WebViewBuilder::new()
         .with_url("https://chat.zalo.me")
         .with_user_agent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15")
+        .with_ipc_handler(|req| {
+            // JS calls: window.ipc.postMessage(JSON.stringify(data))
+            let body = req.body();
+            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(body) {
+                *ZALO_MESSAGES.lock().unwrap() = Some(parsed);
+            }
+        })
         .with_bounds(Rect {
             position: LogicalPosition::new(WINDOW_W - SIDEBAR_W, 0.0).into(),
             size: LogicalSize::new(SIDEBAR_W, WINDOW_H).into(),
@@ -181,7 +188,9 @@ async fn start_agent() {
         .route("/api/zalo/open", axum::routing::post(zalo_open_handler))
         .route("/api/zalo/send", axum::routing::post(zalo_send_handler))
         .route("/api/zalo/search-and-send", axum::routing::post(zalo_search_and_send_handler))
-        .route("/api/zalo/conversations", axum::routing::get(zalo_conversations_handler));
+        .route("/api/zalo/conversations", axum::routing::get(zalo_conversations_handler))
+        .route("/api/zalo/messages", axum::routing::get(zalo_messages_handler))
+        .route("/api/zalo/_messages_callback", axum::routing::get(zalo_messages_callback));
 
     let addr = format!("0.0.0.0:{}", config.http_port);
     let listener = tokio::net::TcpListener::bind(&addr).await.expect("Failed to bind");
@@ -597,6 +606,93 @@ async fn zalo_search_and_send_handler(
         "to": req.to,
         "message": req.message,
     }))
+}
+
+// Shared message buffer — JS in Zalo WebView posts messages here via fetch()
+static ZALO_MESSAGES: Mutex<Option<serde_json::Value>> = Mutex::new(None);
+
+async fn zalo_messages_handler() -> axum::response::Json<serde_json::Value> {
+    // Clear previous data
+    *ZALO_MESSAGES.lock().unwrap() = None;
+
+    // Inject JS → extract messages → send via IPC (window.ipc.postMessage)
+    // IPC bypasses CORS entirely — wry built-in mechanism
+    let _ = eval_zalo_js(r#"(function(){
+        var messages=[];
+
+        // Scan all leaf text nodes deeply nested (chat content)
+        var all=document.querySelectorAll('*');
+        for(var i=0;i<all.length;i++){
+            var el=all[i];
+            if(el.children.length>3)continue;
+            var text=el.textContent?el.textContent.trim():'';
+            if(text.length<1||text.length>500)continue;
+            if(el.children.length>0){
+                var childText='';
+                for(var c=0;c<el.children.length;c++)childText+=(el.children[c].textContent||'');
+                if(childText.trim()===text)continue;
+            }
+            var cls=(typeof el.className==='string')?el.className:'';
+            var depth=0;var p=el;
+            while(p&&p!==document.body){depth++;p=p.parentElement;}
+            if(depth<8)continue;
+            messages.push({
+                content:text,
+                class:cls.substring(0,60),
+                tag:el.tagName,
+                depth:depth
+            });
+        }
+
+        // Send via wry IPC — no CORS issues
+        if(window.ipc&&window.ipc.postMessage){
+            window.ipc.postMessage(JSON.stringify(messages.slice(-100)));
+        }
+    })();"#);
+
+    // Wait for IPC callback
+    for _ in 0..20 {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        if ZALO_MESSAGES.lock().unwrap().is_some() {
+            break;
+        }
+    }
+
+    let data = ZALO_MESSAGES.lock().unwrap().take();
+    match data {
+        Some(msgs) => axum::response::Json(serde_json::json!({
+            "ok": true,
+            "messages": msgs,
+        })),
+        None => axum::response::Json(serde_json::json!({
+            "ok": false,
+            "messages": [],
+            "note": "No messages extracted. Open a conversation in Zalo sidebar first.",
+        })),
+    }
+}
+
+// Internal callback — receives messages via GET (image src trick) or POST
+async fn zalo_messages_callback(
+    query: axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> axum::response::Response {
+    if let Some(data) = query.get("data") {
+        if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(data) {
+            *ZALO_MESSAGES.lock().unwrap() = Some(parsed);
+        }
+    }
+    // Return 1x1 transparent PNG (for image src)
+    axum::response::Response::builder()
+        .header("Content-Type", "image/png")
+        .body(axum::body::Body::from(vec![
+            0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D,
+            0x49, 0x48, 0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+            0x08, 0x06, 0x00, 0x00, 0x00, 0x1F, 0x15, 0xC4, 0x89, 0x00, 0x00, 0x00,
+            0x0A, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9C, 0x62, 0x00, 0x00, 0x00, 0x02,
+            0x00, 0x01, 0xE5, 0x27, 0xDE, 0xFC, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45,
+            0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82,
+        ]))
+        .unwrap()
 }
 
 async fn zalo_conversations_handler() -> axum::response::Json<serde_json::Value> {

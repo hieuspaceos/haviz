@@ -39,6 +39,7 @@ export const api = {
     open: (index: number) => post('/zalo/open', { index }),
     send: (message: string) => post('/zalo/send', { message }),
     searchAndSend: (to: string, message: string) => post('/zalo/search-and-send', { to, message }),
+    messages: () => get<{ ok: boolean; messages: any[] }>('/zalo/messages'),
   },
 
   screenshot: () => fetch(`${API_BASE}/screenshot`).then(r => r.blob()),
