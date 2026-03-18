@@ -2108,3 +2108,850 @@ Các ngành tạo template pack:
 
 Revenue split: Creator 70% | Haviz 30%
 ```
+
+---
+
+## 15. Security Architecture
+
+### 15.1 Authentication Flow
+
+```
+┌─ User Auth (Web/Mobile) ────────────────────────────────────────┐
+│                                                                  │
+│  1. User login: email + password → Supabase Auth                 │
+│  2. Supabase trả về: access_token (JWT, 1h) + refresh_token     │
+│  3. Web/Mobile gửi: Authorization: Bearer <access_token>        │
+│  4. Haviz API verify JWT → extract user_id, org_id              │
+│  5. Token hết hạn → refresh tự động (refresh_token, 30 ngày)    │
+│                                                                  │
+│  JWT payload:                                                    │
+│  {                                                               │
+│    sub: "user_abc",                                              │
+│    org_id: "org_123",                                            │
+│    role: "member",        // owner | admin | member              │
+│    iat: 1711000000,                                              │
+│    exp: 1711003600        // +1h                                 │
+│  }                                                               │
+│                                                                  │
+└──────────────────────────────────────────────────────────────────┘
+
+┌─ Agent Auth (Machine-to-Server) ────────────────────────────────┐
+│                                                                  │
+│  1. User cài Agent → login 1 lần qua browser OAuth flow         │
+│  2. Server cấp agent_token (random 256-bit, hashed in DB)       │
+│  3. Agent lưu token encrypted trong OS keychain:                 │
+│     macOS: Keychain Access                                       │
+│     Windows: Windows Credential Manager                          │
+│  4. Mỗi request: X-Agent-Token: <agent_token>                   │
+│  5. Server verify: hash(token) == agents.auth_token_hash         │
+│                                                                  │
+│  Token rotation:                                                 │
+│  - Tự động rotate mỗi 30 ngày                                   │
+│  - Agent request new token → server issue + revoke old           │
+│  - Nếu token bị compromise: user revoke từ Web UI               │
+│                                                                  │
+└──────────────────────────────────────────────────────────────────┘
+
+┌─ WebSocket Auth ────────────────────────────────────────────────┐
+│                                                                  │
+│  Agent → Server:                                                 │
+│  1. WSS connect: wss://api.haviz.vn/ws?token=<agent_token>      │
+│  2. Server verify token → accept/reject                          │
+│  3. Heartbeat mỗi 30s để giữ connection                         │
+│  4. Token expire → server gửi "auth:expired" → Agent re-auth    │
+│                                                                  │
+│  Web/Mobile → Server:                                            │
+│  1. WSS connect: wss://api.haviz.vn/ws?jwt=<access_token>       │
+│  2. JWT expire → client gửi "auth:refresh" với refresh_token    │
+│                                                                  │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+### 15.2 API Security
+
+```
+Mọi API endpoint:
+  ├── Rate limiting:  100 req/min per user, 1000 req/min per org
+  ├── CORS:           Chỉ allow haviz.vn, localhost:9999
+  ├── HTTPS only:     HTTP → redirect 301
+  ├── Input validation: Zod schema cho mọi request body
+  ├── SQL injection:   Drizzle ORM (parameterized queries)
+  ├── XSS:            Content-Security-Policy headers
+  └── CSRF:           SameSite cookies + CSRF token
+
+Agent local API (localhost:9999):
+  ├── Chỉ accept từ: 127.0.0.1, LAN IPs (192.168.x.x, 10.x.x.x)
+  ├── Reject public IP access
+  ├── Optional: password protect (user set trong Agent settings)
+  └── HTTPS với self-signed cert (hoặc HTTP localhost only)
+```
+
+### 15.3 Data Encryption
+
+```
+┌─ At Rest ────────────────────────────────────────────────────────┐
+│                                                                   │
+│  Agent SQLite (Tầng 3):                                           │
+│    SQLCipher — transparent AES-256-CBC encryption                 │
+│    Key derived từ: user password + PBKDF2 (100k iterations)       │
+│    Mở DB cần password → nếu ai copy file SQLite = không đọc được │
+│                                                                   │
+│  Cloud PostgreSQL:                                                │
+│    PostgreSQL TDE (Transparent Data Encryption)                   │
+│    Disk encryption (LUKS / cloud provider encryption)             │
+│                                                                   │
+│  Cloud Tầng 2 (E2E):                                             │
+│    Đã encrypted trước khi gửi lên → double encryption             │
+│                                                                   │
+└───────────────────────────────────────────────────────────────────┘
+
+┌─ In Transit ─────────────────────────────────────────────────────┐
+│                                                                   │
+│  Agent ↔ Cloud:     TLS 1.3 (WSS)                                │
+│  Web/Mobile ↔ Cloud: TLS 1.3 (HTTPS)                             │
+│  Agent ↔ Groq API:  TLS 1.3 (HTTPS) + anonymized payload        │
+│  LAN access:        Optional TLS with self-signed cert            │
+│                                                                   │
+└───────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## 16. E2E Encryption Protocol (Tầng 2)
+
+### 16.1 Key Management
+
+```
+┌─ Key Generation (1 lần khi user đăng ký) ───────────────────────┐
+│                                                                   │
+│  1. Agent generate: master_key = random 256 bits                  │
+│  2. Derive encryption key:                                        │
+│     enc_key = HKDF-SHA256(master_key, salt="haviz-e2e-enc")      │
+│  3. Lưu master_key vào OS Keychain (encrypted by OS)              │
+│     macOS: security add-generic-password -s "haviz" -a "user_id" │
+│     Windows: CredWrite("haviz/user_id", master_key)              │
+│  4. Backup key: hiện cho user 1 lần → user tự ghi lại            │
+│     "Mã khôi phục: XXXX-XXXX-XXXX-XXXX-XXXX-XXXX"               │
+│     (BIP39-style mnemonic hoặc base64 encoded)                   │
+│                                                                   │
+│  master_key KHÔNG BAO GIỜ gửi lên server                         │
+│  Haviz Cloud KHÔNG CÓ khả năng decrypt Tầng 2                    │
+│                                                                   │
+└───────────────────────────────────────────────────────────────────┘
+```
+
+### 16.2 Encrypt / Decrypt Flow
+
+```
+ENCRYPT (Agent → Cloud):
+  1. data = { contact_name: "Nguyễn Văn A", preview: "Chào chị..." }
+  2. plaintext = JSON.stringify(data)
+  3. nonce = random 12 bytes (unique per message)
+  4. ciphertext = AES-256-GCM.encrypt(enc_key, nonce, plaintext)
+  5. Upload: { encrypted_blob: ciphertext, nonce: nonce }
+
+DECRYPT (Agent ← Cloud):
+  1. Download: { encrypted_blob, nonce }
+  2. plaintext = AES-256-GCM.decrypt(enc_key, nonce, encrypted_blob)
+  3. data = JSON.parse(plaintext)
+
+Web App (remote access):
+  1. Agent online → Web App request key via WSS tunnel
+  2. Agent gửi enc_key encrypted với session key (Diffie-Hellman)
+  3. Web App decrypt Tầng 2 data trong browser memory
+  4. Key KHÔNG persist trong browser (chỉ in-memory)
+  5. Tab đóng → key mất → cần Agent lại
+```
+
+### 16.3 Key Rotation
+
+```
+Mỗi 90 ngày (hoặc user trigger thủ công):
+  1. Agent generate: new_master_key
+  2. Derive: new_enc_key
+  3. Download tất cả encrypted_blob từ Cloud
+  4. Re-encrypt: decrypt(old_key) → encrypt(new_key)
+  5. Upload lại tất cả + update nonce
+  6. Lưu new_master_key vào Keychain, xóa old
+  7. Thời gian: ~vài giây cho 1000 records
+```
+
+### 16.4 Key Recovery
+
+```
+Khi mất máy / cài lại OS / máy mới:
+
+Option 1: Recovery phrase
+  User nhập mã khôi phục (đã ghi lại khi đăng ký)
+  → Derive master_key từ phrase
+  → Decrypt tất cả Tầng 2 data
+
+Option 2: Device-to-device transfer
+  Máy cũ còn hoạt động:
+  1. Mở Agent trên máy cũ → "Transfer keys"
+  2. Hiện QR code chứa master_key (encrypted với OTP)
+  3. Agent máy mới scan QR → nhập OTP → nhận key
+
+Option 3: Key mất hoàn toàn (không recovery phrase, không máy cũ)
+  → Tầng 2 data mất vĩnh viễn (Haviz KHÔNG thể recover)
+  → Tầng 1 data (templates, settings) vẫn còn
+  → Tầng 3 data mất cùng máy cũ
+  → User bắt đầu lại từ đầu (Agent tạo key mới)
+  → ĐÂY LÀ TRADE-OFF của E2E: bảo mật = không recovery
+```
+
+---
+
+## 17. Offline-first Sync Protocol
+
+### 17.1 Sync Strategy: Last-Write-Wins + Append-Only
+
+```
+Haviz KHÔNG dùng CRDT (quá phức tạp cho use case này).
+Thay vào đó, phân loại data theo conflict strategy:
+
+┌─ APPEND-ONLY (không bao giờ conflict) ──────────────────────────┐
+│  Messages:     chỉ INSERT, không UPDATE/DELETE                   │
+│  AI Drafts:    chỉ INSERT, status chuyển 1 chiều                │
+│  Audit logs:   chỉ INSERT                                        │
+│  Analytics:    chỉ INSERT (metrics mỗi giờ/ngày)                │
+│                                                                   │
+│  → Sync đơn giản: Agent gửi records mới → Server INSERT          │
+│  → Không bao giờ conflict                                         │
+└───────────────────────────────────────────────────────────────────┘
+
+┌─ LAST-WRITE-WINS (hiếm conflict) ──────────────────────────────┐
+│  Contacts:      updated_at timestamp → mới nhất thắng           │
+│  Conversations: status, tags → mới nhất thắng                   │
+│  Templates:     content, patterns → mới nhất thắng              │
+│  Settings:      org/user config → mới nhất thắng                │
+│                                                                   │
+│  → Conflict: 2 nơi edit cùng lúc (rất hiếm)                    │
+│  → Giải quyết: updated_at lớn hơn thắng                         │
+│  → Edge case: Agent offline 2 ngày, quay lại → so sánh timestamp│
+└───────────────────────────────────────────────────────────────────┘
+```
+
+### 17.2 Sync Flow khi Agent offline → online
+
+```
+Agent mất mạng lúc 14:00, online lại lúc 16:00:
+
+14:00-16:00 (offline):
+  ├── Agent vẫn đọc Zalo bình thường (AX API = local)
+  ├── Lưu messages vào SQLite (bình thường)
+  ├── AI drafts tạo local (nếu có internet cho Groq)
+  │   └── Không có internet → queue draft requests
+  ├── Metrics tính local (đếm messages, response time)
+  └── Tất cả sync events queue trong: sync_queue table
+
+16:00 (online lại):
+  1. Agent detect network restored
+  2. Đọc sync_queue (FIFO):
+     ├── 45 new messages metadata → encrypt → upload Tầng 2
+     ├── 3 new contacts → encrypt → upload Tầng 2
+     ├── Hourly metrics (14h, 15h) → upload Tầng 1
+     └── 5 AI draft statuses → encrypt → upload Tầng 2
+  3. Download updates từ Cloud:
+     ├── New templates (team member added)
+     ├── Updated org settings
+     └── Messages từ Cloud channels (OA, Messenger)
+  4. Resolve conflicts (last-write-wins trên updated_at)
+  5. Clear sync_queue
+  6. Log: "Sync completed: 45 msgs, 3 contacts, 2h metrics"
+
+Sync queue table (Agent SQLite):
+  sync_queue (
+    id INTEGER PRIMARY KEY,
+    entity_type TEXT,     -- 'message_meta' | 'contact' | 'metric' | 'draft_status'
+    entity_id TEXT,
+    action TEXT,          -- 'insert' | 'update'
+    payload_encrypted BLOB,
+    created_at TIMESTAMP,
+    synced_at TIMESTAMP   -- NULL until synced
+  )
+```
+
+### 17.3 Conflict Resolution UI
+
+```
+Rất hiếm, nhưng khi xảy ra:
+
+┌─ Conflict Detected ─────────────────────────────────────────────┐
+│                                                                  │
+│  Template "Báo giá tour" có 2 phiên bản:                        │
+│                                                                  │
+│  Local (14:30):                    Cloud (15:00):                │
+│  "Giá tour Đà Lạt:                "Giá tour Đà Lạt:            │
+│   3.500.000đ/người"                3.200.000đ/người (sale)"     │
+│                                                                  │
+│  [Giữ Local]  [Giữ Cloud]  [Giữ cả hai]                        │
+│                                                                  │
+└──────────────────────────────────────────────────────────────────┘
+
+Mặc định (auto): Cloud thắng (updated_at mới hơn)
+User có thể bật: "Hỏi tôi khi conflict" trong Settings
+```
+
+---
+
+## 18. Deployment & DevOps
+
+### 18.1 Infrastructure
+
+```
+┌─ Production Stack ──────────────────────────────────────────────┐
+│                                                                  │
+│  ┌─ VN Cloud (FPT Cloud / VNG Cloud) ────────────────────────┐  │
+│  │                                                            │  │
+│  │  API Server:                                               │  │
+│  │    Docker container (Hono + Node.js)                       │  │
+│  │    2 vCPU, 4GB RAM (scale horizontally)                    │  │
+│  │    Auto-scaling: 2-10 instances behind load balancer       │  │
+│  │                                                            │  │
+│  │  PostgreSQL:                                               │  │
+│  │    Managed PostgreSQL (VNG Cloud DB / FPT RDS)             │  │
+│  │    2 vCPU, 4GB RAM, 50GB SSD                              │  │
+│  │    Daily automated backup, point-in-time recovery          │  │
+│  │    Read replica cho analytics queries                      │  │
+│  │                                                            │  │
+│  │  Redis:                                                    │  │
+│  │    Managed Redis (1GB, cluster mode)                       │  │
+│  │    BullMQ queues + rate limiting + session cache           │  │
+│  │                                                            │  │
+│  └────────────────────────────────────────────────────────────┘  │
+│                                                                  │
+│  ┌─ Vercel ──────────────────────────────────────────────────┐  │
+│  │  Next.js Web App (auto-deploy from git)                    │  │
+│  │  CDN: edge caching cho static assets                       │  │
+│  └────────────────────────────────────────────────────────────┘  │
+│                                                                  │
+│  ┌─ User's Machine ─────────────────────────────────────────┐   │
+│  │  Rust Agent + SQLite (self-contained, no dependency)       │   │
+│  └────────────────────────────────────────────────────────────┘  │
+│                                                                  │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+### 18.2 CI/CD Pipeline
+
+```
+┌─ Git Push ──► GitHub Actions ──────────────────────────────────┐
+│                                                                 │
+│  apps/api (push to main):                                       │
+│    1. pnpm install + type-check                                 │
+│    2. pnpm test (vitest)                                        │
+│    3. Docker build + push → VN Cloud Registry                   │
+│    4. Deploy staging → smoke test (health check + key endpoints)│
+│    5. Manual approve → deploy production (blue-green)           │
+│    6. Rollback nếu health check fail trong 5 phút              │
+│                                                                 │
+│  apps/web (push to main):                                       │
+│    1. pnpm install + type-check                                 │
+│    2. pnpm test                                                 │
+│    3. Vercel auto-deploy (preview → production)                 │
+│                                                                 │
+│  agent/ (push to main):                                         │
+│    1. cargo check + clippy                                      │
+│    2. cargo test                                                │
+│    3. Cross-compile: x86_64-apple-darwin, aarch64-apple-darwin  │
+│       + x86_64-pc-windows-msvc                                  │
+│    4. Code signing (Apple Developer ID + Windows Authenticode)  │
+│    5. Upload binaries → S3 (versioned)                          │
+│    6. Update version manifest: api.haviz.vn/agent/version       │
+│    7. Agents auto-update (OTA, xem Section 10.8)                │
+│                                                                 │
+│  Database migrations:                                           │
+│    1. drizzle-kit generate                                      │
+│    2. Review SQL diff                                           │
+│    3. Apply staging → verify                                    │
+│    4. Apply production (trong maintenance window nếu breaking)  │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### 18.3 Environments
+
+```
+┌──────────────┬──────────────────────────────────────────────────┐
+│ Environment  │ Mục đích                                        │
+├──────────────┼──────────────────────────────────────────────────┤
+│ local        │ Dev machine: docker-compose (PG + Redis)        │
+│              │ Agent: cargo run                                 │
+│              │ Web: next dev                                    │
+├──────────────┼──────────────────────────────────────────────────┤
+│ staging      │ VN Cloud: staging.api.haviz.vn                  │
+│              │ Separate DB + Redis                              │
+│              │ Seed data: 5 test users, 100 conversations      │
+│              │ Agent connects to staging API                    │
+├──────────────┼──────────────────────────────────────────────────┤
+│ production   │ VN Cloud: api.haviz.vn                          │
+│              │ Blue-green deployment                            │
+│              │ DB backup mỗi 6 giờ                             │
+│              │ Monitoring active                                │
+└──────────────┴──────────────────────────────────────────────────┘
+```
+
+### 18.4 Monitoring Stack
+
+```
+┌─ Observability ─────────────────────────────────────────────────┐
+│                                                                  │
+│  Logging:                                                        │
+│    API Server → Pino (structured JSON) → Grafana Loki            │
+│    Agent → tracing crate → local log file + rotate               │
+│                                                                  │
+│  Metrics:                                                        │
+│    API Server → Prometheus metrics endpoint                      │
+│    ├── http_request_duration_seconds                              │
+│    ├── ws_connections_active                                      │
+│    ├── bullmq_queue_depth                                        │
+│    ├── ai_draft_latency_seconds                                  │
+│    └── agent_heartbeat_last_seen                                 │
+│    → Grafana dashboards                                          │
+│                                                                  │
+│  Error tracking:                                                 │
+│    API + Web → Sentry (error capture + tracing)                  │
+│    Agent → Sentry Rust SDK (opt-in, user consent)                │
+│                                                                  │
+│  Uptime:                                                         │
+│    BetterUptime / UptimeRobot                                    │
+│    ├── api.haviz.vn/health (API)                                 │
+│    ├── haviz.vn (Web)                                            │
+│    └── Alert → Slack/Telegram/Email khi down                     │
+│                                                                  │
+│  Alerts (Grafana):                                               │
+│    ├── API error rate > 5% → Slack alert                         │
+│    ├── Queue depth > 1000 → Slack alert                          │
+│    ├── Agent disconnect > 50% of active → Slack alert            │
+│    ├── DB connection pool exhausted → PagerDuty                  │
+│    └── Disk usage > 80% → Slack alert                            │
+│                                                                  │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## 19. Agent Distribution
+
+### 19.1 Packaging
+
+```
+┌─ macOS ──────────────────────────────────────────────────────────┐
+│                                                                   │
+│  Format: .dmg (drag to Applications)                              │
+│  Size: ~8-12MB (Rust binary + embedded webview resources)         │
+│  Signing: Apple Developer ID (notarized)                          │
+│    → Không bị Gatekeeper chặn                                    │
+│    → "Haviz.app is from an identified developer"                  │
+│                                                                   │
+│  Cài đặt:                                                        │
+│    1. Download haviz-agent-macos-arm64.dmg (hoặc x64)            │
+│    2. Drag Haviz.app → Applications                              │
+│    3. First launch: macOS hỏi Accessibility permission            │
+│       "Haviz muốn điều khiển máy tính của bạn"                   │
+│       → System Preferences → Privacy → Accessibility → Allow     │
+│    4. Login qua browser → Agent nhận token                        │
+│    5. Tray icon xuất hiện → Agent chạy background                │
+│                                                                   │
+│  Auto-start: LaunchAgent plist                                    │
+│    ~/Library/LaunchAgents/vn.haviz.agent.plist                   │
+│                                                                   │
+└───────────────────────────────────────────────────────────────────┘
+
+┌─ Windows ────────────────────────────────────────────────────────┐
+│                                                                   │
+│  Format: .msi installer (hoặc .exe NSIS)                          │
+│  Size: ~10-15MB                                                   │
+│  Signing: Authenticode certificate (EV recommended)               │
+│    → Windows SmartScreen trust                                    │
+│                                                                   │
+│  Cài đặt:                                                        │
+│    1. Download haviz-agent-windows-x64.msi                        │
+│    2. Run installer → chọn install path                           │
+│    3. Login qua browser                                           │
+│    4. Tray icon xuất hiện                                         │
+│                                                                   │
+│  Auto-start: Registry key                                         │
+│    HKCU\Software\Microsoft\Windows\CurrentVersion\Run             │
+│                                                                   │
+└───────────────────────────────────────────────────────────────────┘
+```
+
+### 19.2 Auto-Update (OTA)
+
+```
+Mỗi 6 giờ, Agent check:
+  GET https://api.haviz.vn/agent/version
+  Response: {
+    latest: "1.2.0",
+    url_macos_arm64: "https://dl.haviz.vn/agent/1.2.0/haviz-macos-arm64.tar.gz",
+    url_macos_x64:   "https://dl.haviz.vn/agent/1.2.0/haviz-macos-x64.tar.gz",
+    url_windows_x64: "https://dl.haviz.vn/agent/1.2.0/haviz-windows-x64.zip",
+    checksum_sha256: "abc123...",
+    changelog: "Bug fixes, improved AX API parsing",
+    min_version: "1.0.0",     // Force update nếu < min_version
+    optional: true             // true = user chọn, false = bắt buộc
+  }
+
+Update flow:
+  1. Agent so sánh current vs latest version
+  2. optional=true → notification: "Phiên bản mới 1.2.0. Cập nhật?"
+     optional=false → "Cập nhật bắt buộc. Agent sẽ restart trong 5 phút."
+  3. Download binary → verify SHA-256 checksum
+  4. macOS: replace binary in .app bundle
+     Windows: MSI silent upgrade
+  5. Restart Agent
+  6. Verify: Agent gửi agent:connect với version mới
+  7. Rollback nếu crash trong 60s sau update:
+     Giữ bản cũ (backup) → restore → báo cáo lỗi
+```
+
+### 19.3 Permissions Required
+
+```
+macOS:
+  ├── Accessibility (bắt buộc): đọc AX API
+  ├── Automation (bắt buộc): AppleScript control Zalo
+  ├── Network (tự động): outbound connections
+  └── Login Items (optional): auto-start
+
+Windows:
+  ├── UI Automation (tự động): Win32 API
+  ├── Network (tự động): firewall allow
+  └── Startup (optional): auto-start
+```
+
+---
+
+## 20. Performance & Limits
+
+### 20.1 Benchmarks (Expected)
+
+```
+┌─ Agent Performance ─────────────────────────────────────────────┐
+│                                                                  │
+│  AX API polling:                                                 │
+│    Latency per poll: ~50-100ms (traverse Zalo window hierarchy)  │
+│    Poll interval: 3s                                             │
+│    CPU usage: ~1-2% (idle), ~5% (during poll)                    │
+│    Memory: ~20-30MB RSS                                          │
+│                                                                  │
+│  SQLite performance:                                             │
+│    INSERT message: <1ms                                          │
+│    SELECT recent 100 messages: ~5ms                              │
+│    Full-text search (FTS5): ~10-20ms per 10k messages            │
+│    DB size: ~1MB per 1000 messages (text only)                   │
+│    Practical limit: 1M+ messages (SQLite handles billions)       │
+│                                                                  │
+│  AI Draft generation:                                            │
+│    Anonymize: <5ms                                               │
+│    Groq API call: ~500-1500ms (network dependent)                │
+│    Fill-back names: <1ms                                         │
+│    Total: ~0.5-1.5s per draft                                    │
+│                                                                  │
+│  E2E Encryption:                                                 │
+│    Encrypt 1 record: <0.1ms (AES-256-GCM, hardware accelerated) │
+│    Encrypt 1000 records (batch sync): ~50ms                      │
+│    Key derivation (HKDF): ~1ms                                   │
+│                                                                  │
+│  Send message (AppleScript):                                     │
+│    Search + click + paste + send: 3-8s (includes human delays)   │
+│                                                                  │
+└──────────────────────────────────────────────────────────────────┘
+
+┌─ Server Performance ────────────────────────────────────────────┐
+│                                                                  │
+│  API response time (p95):                                        │
+│    REST endpoints: <100ms                                        │
+│    WebSocket message: <50ms                                      │
+│                                                                  │
+│  BullMQ throughput:                                              │
+│    message:ingest: 100 msg/s per worker                          │
+│    ai:draft (cloud): 10 draft/s (Groq rate limit)               │
+│                                                                  │
+│  WebSocket connections:                                          │
+│    Per server: ~10,000 concurrent (Node.js + ws library)         │
+│    With 2 servers: ~20,000 concurrent agents + web clients       │
+│                                                                  │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+### 20.2 Scaling Limits
+
+```
+┌────────────────────┬──────────────┬──────────────────────────────┐
+│ Component          │ Limit        │ Scaling strategy              │
+├────────────────────┼──────────────┼──────────────────────────────┤
+│ Agent SQLite       │ 1M+ messages │ Archiving: move old → archive│
+│                    │ per agent    │ DB after 6 months            │
+│ Cloud PostgreSQL   │ 10M rows     │ Partitioning by org_id +     │
+│                    │ per table    │ date. Read replica cho query │
+│ Redis              │ 1GB          │ Cluster mode, evict old keys │
+│ WebSocket          │ 10k/server   │ Horizontal: add servers      │
+│ BullMQ             │ 100 msg/s    │ Add workers, separate queues │
+│ Groq API           │ 30 req/min   │ Queue + batch, upgrade plan  │
+│ Agent binary size  │ 8-15MB       │ Strip symbols, UPX compress  │
+│ Concurrent Agents  │ 20k          │ Multiple API servers + LB    │
+└────────────────────┴──────────────┴──────────────────────────────┘
+```
+
+### 20.3 SQLite Archiving Strategy
+
+```
+Khi Agent SQLite > 100MB (khoảng 100k messages):
+  1. Agent detect: DB size > threshold
+  2. Notification: "Tin nhắn cũ sẽ được archive"
+  3. Move messages older than 6 months → archive_YYYY.sqlite
+  4. Main DB chỉ giữ 6 tháng gần nhất
+  5. Archive DB: read-only, searchable, same encryption
+  6. User tìm tin nhắn cũ → Agent search across all DBs
+```
+
+---
+
+## 21. Error Handling & Recovery
+
+### 21.1 Agent Crash Recovery
+
+```
+┌─ Agent crash (unexpected termination) ──────────────────────────┐
+│                                                                  │
+│  1. SQLite: WAL mode → auto-recovery trên next start             │
+│     Nếu crash giữa lúc write → WAL replay → data intact        │
+│     Worst case: mất tin nhắn cuối cùng chưa commit              │
+│                                                                  │
+│  2. Agent restart:                                               │
+│     Auto-start (LaunchAgent/Registry) → restart trong 5s        │
+│     Reconnect WebSocket → Cloud                                  │
+│     Resume polling Zalo                                          │
+│     Process sync_queue (nếu có pending)                          │
+│                                                                  │
+│  3. Crash loop detection:                                        │
+│     > 3 crashes trong 5 phút → dừng auto-restart                │
+│     Notification: "Haviz gặp lỗi liên tục. Kiểm tra log."      │
+│     Log file: ~/Library/Logs/Haviz/agent.log (macOS)             │
+│                %APPDATA%\Haviz\logs\agent.log (Windows)          │
+│                                                                  │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+### 21.2 SQLite Corruption Recovery
+
+```
+Phát hiện:
+  Agent startup: PRAGMA integrity_check;
+  Nếu fail → DB corrupted
+
+Recovery:
+  1. Thử repair: sqlite3 corrupt.db ".recover" | sqlite3 repaired.db
+  2. Nếu repair thành công → replace DB, log warning
+  3. Nếu repair fail:
+     a. Có backup? → restore từ backup gần nhất
+        (Agent auto-backup mỗi ngày: db_backup_YYYYMMDD.sqlite.enc)
+     b. Không có backup? → tạo DB mới
+        → Cloud Tầng 2 data vẫn còn (encrypted metadata)
+        → Agent poll Zalo lại → rebuild messages từ Zalo history
+        → Notification: "Database đã được khôi phục. Một số tin nhắn
+          cũ có thể bị mất."
+
+Prevention:
+  ├── WAL mode (default): crash-safe writes
+  ├── Daily backup: encrypted copy → ~/Haviz/backups/
+  ├── Integrity check: mỗi lần Agent start
+  └── Disk space check: cảnh báo khi < 500MB free
+```
+
+### 21.3 Mid-Send Failure
+
+```
+Agent đang gửi tin nhắn (AppleScript) → crash/disconnect:
+
+Trước khi gửi:
+  message.status = 'sending'
+  message.send_attempt = attempt + 1
+
+Sau khi restart:
+  1. Check messages WHERE status = 'sending'
+  2. Mở Zalo → kiểm tra conversation cuối
+  3. Tin đã gửi thành công? (AX API đọc outbound message)
+     → Mark status = 'sent'
+  4. Tin chưa gửi?
+     → send_attempt < 3? → retry
+     → send_attempt >= 3? → mark 'failed' + notification user
+  5. Không chắc chắn? → mark 'uncertain'
+     → UI: "Không xác định tin nhắn đã gửi chưa. Kiểm tra Zalo."
+```
+
+### 21.4 Data Migration (Agent Version Upgrade)
+
+```
+Khi Agent update có DB schema change:
+
+agent/migrations/
+├── v1_0_0_initial.sql
+├── v1_1_0_add_attachments.sql
+├── v1_2_0_add_sync_queue.sql
+└── v1_3_0_add_analytics.sql
+
+Migration flow:
+  1. Agent start → check current_version vs db_version
+  2. current > db → run pending migrations sequentially
+  3. Mỗi migration trong transaction:
+     BEGIN;
+     ALTER TABLE ...;
+     UPDATE db_meta SET version = '1.2.0';
+     COMMIT;
+  4. Migration fail → ROLLBACK → Agent chạy version cũ
+     → Alert: "Cập nhật database thất bại. Liên hệ support."
+  5. Backup DB trước mỗi migration (tự động)
+
+Rollback:
+  Agent detect migration fail → restore backup
+  Download Agent version cũ nếu binary cũng incompatible
+```
+
+---
+
+## 22. Phase 2-3 Detailed Design
+
+### 22.1 Phase 2: Intelligence (Tháng 3-4 2026)
+
+#### Voice Reports
+
+```
+Salesperson ghi âm meeting/gọi điện:
+  1. App mobile: record audio → save local
+  2. Agent upload encrypted audio → Cloud (opt-in)
+     HOẶC: transcribe local (Whisper.cpp trên device)
+  3. Groq Whisper API: audio → transcript (anonymized)
+  4. Groq LLM: transcript → structured data:
+     {
+       customer: "[Customer]",
+       discussed: ["báo giá tour Đà Lạt", "ngày đi 25/3"],
+       action_items: ["gửi báo giá", "book phòng khách sạn"],
+       sentiment: "positive",
+       follow_up_date: "2026-03-22"
+     }
+  5. Action items → auto-create tasks / reminders
+  6. Transcript + extracted data → lưu local (Tầng 3)
+```
+
+#### Chatbot Training
+
+```
+Dùng historical messages để train chatbot tự động reply:
+
+  1. Collect training data (local):
+     Agent export: question → answer pairs từ SQLite
+     Anonymize: xóa PII
+     Filter: chỉ lấy successful conversations (có reply + positive outcome)
+
+  2. Fine-tune model (optional, cloud):
+     Upload anonymized QA pairs → fine-tune Llama model trên Groq
+     HOẶC: dùng few-shot prompting (không cần fine-tune)
+
+  3. Chatbot modes:
+     Manual: AI draft → user approve (hiện tại)
+     Semi-auto: AI draft → auto-send nếu confidence > 90%
+                AI draft → require approval nếu confidence < 90%
+     Full-auto: AI reply tự động (chỉ cho Zalo OA, cần consent rõ ràng)
+
+  4. Confidence scoring:
+     Template match: 95% confidence
+     Similar to past Q&A: 80-95%
+     Novel question: <80% → always require approval
+```
+
+#### Analytics Dashboard (Enhanced)
+
+```
+Ngoài basic metrics (đã có ở 8.5), thêm:
+
+  Revenue tracking:
+    - Gắn conversation → deal value (user input)
+    - Revenue per salesperson
+    - Conversion rate: conversation → sale
+    - Pipeline visualization
+
+  Team leaderboard:
+    - Response time ranking
+    - Customer satisfaction (sentiment analysis)
+    - AI adoption rate (ai_drafts_approved / total_replies)
+
+  Predictions (AI):
+    - "Conversation X có 75% khả năng chốt deal" (based on sentiment + patterns)
+    - "Khách Y chưa reply 3 ngày → suggest follow-up"
+    - Weekly forecast: expected messages, peak hours
+```
+
+### 22.2 Phase 3: Platform (Tháng 5-6 2026)
+
+#### REST API + SDK
+
+```
+Public API cho developers:
+  POST /api/v1/public/messages/send
+  GET  /api/v1/public/conversations
+  GET  /api/v1/public/contacts
+  POST /api/v1/public/templates
+
+SDK:
+  npm install @haviz/sdk
+  pip install haviz-sdk
+
+  const haviz = new Haviz({ apiKey: "hvz_..." });
+  await haviz.messages.send({
+    channel: "zalo_oa",
+    to: "contact_id",
+    content: "Hello!"
+  });
+```
+
+#### MCP (Model Context Protocol)
+
+```
+Haviz as MCP Server:
+  Cho phép AI agents (Claude, GPT) truy cập Haviz data:
+
+  Tools:
+    haviz_list_conversations(status, limit)
+    haviz_read_messages(conversation_id, limit)
+    haviz_send_message(conversation_id, content)
+    haviz_search_contacts(query)
+    haviz_get_analytics(date_range)
+
+  Resources:
+    haviz://conversations/{id}
+    haviz://contacts/{id}
+    haviz://templates
+
+  Use case:
+    Claude: "Tóm tắt 5 conversation gần nhất"
+    → MCP → haviz_list_conversations → haviz_read_messages × 5
+    → Claude tóm tắt
+
+  Security:
+    MCP chỉ truy cập Cloud channels (OA, Messenger)
+    Local channels (Zalo cá nhân) → cần Agent online + user approve
+```
+
+#### White-label
+
+```
+Cho agency/partner bán dưới brand riêng:
+
+  Config:
+    brand_name: "SalesPro by Agency X"
+    logo_url: "https://..."
+    primary_color: "#FF6B00"
+    domain: "inbox.agencyx.vn"
+
+  Revenue:
+    Agency trả Haviz: 50% of subscription
+    Agency giữ: 50% + markup tùy ý
+
+  Tech:
+    Cùng infrastructure, khác UI theme + domain
+    Multi-tenant: org.white_label_config JSONB
+```
