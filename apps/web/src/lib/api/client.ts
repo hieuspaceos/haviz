@@ -42,6 +42,11 @@ export const api = {
     messages: () => get<{ ok: boolean; messages: any[] }>('/zalo/messages'),
   },
 
+  ai: {
+    draft: (messages: { sender: string; content: string; direction: string }[], orgContext?: string) =>
+      post<{ ok: boolean; draft?: string; error?: string }>('/ai/draft', { messages, org_context: orgContext }),
+  },
+
   screenshot: () => fetch(`${API_BASE}/screenshot`).then(r => r.blob()),
 };
 

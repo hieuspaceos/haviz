@@ -1,3 +1,4 @@
+mod ai;
 mod channels;
 mod config;
 mod db;

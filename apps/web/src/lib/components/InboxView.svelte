@@ -8,6 +8,8 @@
   let sending = false;
   let chatMessages: any[] = [];
   let loadingMessages = false;
+  let aiDraft = '';
+  let aiLoading = false;
 
   async function search() {
     if (!searchQuery.trim()) return;
@@ -49,6 +51,36 @@
       addLog('Send failed', 'err');
     }
     sending = false;
+  }
+
+  async function generateDraft() {
+    if (chatMessages.length === 0) {
+      addLog('Load Messages first', 'err');
+      return;
+    }
+    aiLoading = true;
+    addLog('Generating AI draft...');
+    try {
+      // Convert chat messages to AI format
+      const msgs = chatMessages
+        .filter(m => m.content && m.content.length > 1)
+        .map(m => ({
+          sender: m.sender || m.class || 'Unknown',
+          content: m.content,
+          direction: (m.class || '').includes('conv-dbname') ? 'outbound' : 'inbound',
+        }));
+      const data = await api.ai.draft(msgs);
+      if (data.ok && data.draft) {
+        aiDraft = data.draft;
+        messageText = data.draft; // Pre-fill send box
+        addLog('AI Draft ready!');
+      } else {
+        addLog('AI Draft failed: ' + (data.error || 'unknown'), 'err');
+      }
+    } catch (e) {
+      addLog('AI Draft error', 'err');
+    }
+    aiLoading = false;
   }
 
   async function loadMessages() {
@@ -121,6 +153,44 @@
     >
       {sending ? 'Sending...' : 'Send'}
     </button>
+  </div>
+
+  <!-- AI Draft -->
+  <div>
+    <div class="flex items-center gap-2 mb-2">
+      <h3 class="text-xs font-semibold text-[var(--text-secondary)] uppercase tracking-wide">AI Draft Reply</h3>
+      <button
+        class="px-3 py-1 text-xs rounded bg-purple-600 text-white hover:opacity-90 disabled:opacity-50"
+        disabled={aiLoading || chatMessages.length === 0}
+        on:click={generateDraft}
+      >
+        {aiLoading ? 'Generating...' : 'Generate Draft'}
+      </button>
+    </div>
+
+    {#if aiDraft}
+      <div class="border border-purple-500/30 rounded-lg p-3 bg-purple-500/10 mb-2">
+        <div class="text-sm text-[var(--text-primary)]">{aiDraft}</div>
+        <div class="flex gap-2 mt-2">
+          <button
+            class="px-3 py-1 text-xs rounded bg-[var(--success)] text-white"
+            on:click={() => { messageText = aiDraft; addLog('Draft copied to Send box'); }}
+          >
+            Use Draft
+          </button>
+          <button
+            class="px-3 py-1 text-xs rounded bg-[var(--danger)] text-white"
+            on:click={() => { aiDraft = ''; addLog('Draft rejected'); }}
+          >
+            Reject
+          </button>
+        </div>
+      </div>
+    {:else if chatMessages.length === 0}
+      <div class="text-xs text-[var(--text-secondary)] mb-2">
+        Load Messages first, then Generate Draft
+      </div>
+    {/if}
   </div>
 
   <!-- Chat Messages -->

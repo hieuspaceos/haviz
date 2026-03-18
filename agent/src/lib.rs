@@ -1,3 +1,4 @@
+pub mod ai;
 pub mod channels;
 pub mod config;
 pub mod db;

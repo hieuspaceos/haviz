@@ -195,8 +195,11 @@ async fn start_agent() {
         haviz_agent::db::Database::open(&config.db_path).expect("Failed to open DB"),
     );
 
-    // Extended router with Zalo control + screenshot endpoints
+    let groq_key = config.groq_api_key.clone();
+
+    // Extended router with Zalo control + AI + screenshot endpoints
     let app = haviz_agent::server::create_router(db)
+        .route("/api/ai/draft", axum::routing::post(ai_draft_handler))
         .route("/api/screenshot", axum::routing::get(screenshot_handler))
         .route("/api/zalo/search", axum::routing::post(zalo_search_handler))
         .route("/api/zalo/open", axum::routing::post(zalo_open_handler))
@@ -209,6 +212,52 @@ async fn start_agent() {
     let addr = format!("0.0.0.0:{}", config.http_port);
     let listener = tokio::net::TcpListener::bind(&addr).await.expect("Failed to bind");
     axum::serve(listener, app).await.expect("Server error");
+}
+
+// === AI Draft ===
+
+#[derive(serde::Deserialize)]
+struct AiDraftRequest {
+    messages: Vec<haviz_agent::ai::ChatMessage>,
+    org_context: Option<String>,
+}
+
+async fn ai_draft_handler(
+    axum::extract::Json(req): axum::extract::Json<AiDraftRequest>,
+) -> axum::response::Json<serde_json::Value> {
+    let api_key = match std::env::var("GROQ_API_KEY") {
+        Ok(k) if !k.is_empty() => k,
+        _ => {
+            return axum::response::Json(serde_json::json!({
+                "ok": false,
+                "error": "GROQ_API_KEY not set. Add it to .env.local",
+            }));
+        }
+    };
+
+    if req.messages.is_empty() {
+        return axum::response::Json(serde_json::json!({
+            "ok": false,
+            "error": "No messages provided",
+        }));
+    }
+
+    match haviz_agent::ai::generate_draft(
+        &api_key,
+        &req.messages,
+        req.org_context.as_deref(),
+    )
+    .await
+    {
+        Ok(draft) => axum::response::Json(serde_json::json!({
+            "ok": true,
+            "draft": draft,
+        })),
+        Err(e) => axum::response::Json(serde_json::json!({
+            "ok": false,
+            "error": e,
+        })),
+    }
 }
 
 // === Screenshot ===
