@@ -721,43 +721,39 @@ async fn zalo_conversations_handler() -> axum::response::Json<serde_json::Value>
         var convs=[];
         var seen=new Set();
 
-        // Find .truncate elements — these are conversation names in sidebar
+        // Skip UI labels and nav items
+        var skip=new Set(['Tin nhắn','Danh bạ','Zalo Cloud','My Documents','Công cụ',
+            'Cài đặt','Tìm kiếm','Tất cả','Chưa đọc','Phân loại','Đóng','Tải ngay']);
+
+        // Find .truncate elements that are INSIDE conversation list items
+        // Conversation items have class containing 'conv' in their ancestor
         var truncates=document.querySelectorAll('.truncate');
-        var skip=['Tin nhắn','Danh bạ','Zalo Cloud','My Documents','Công cụ','Cài đặt'];
 
         truncates.forEach(function(el){
             var name=el.textContent?el.textContent.trim():'';
-            if(!name||seen.has(name)||skip.indexOf(name)>=0)return;
+            if(!name||name.length>50||name.length<1||seen.has(name)||skip.has(name))return;
+            // Skip if it starts with "Bạn:" (it's a preview, not a name)
+            if(name.indexOf('Bạn:')===0)return;
+
+            // Check: is this element inside a conversation item (not nav)?
+            // Nav items have class 'lb-tab-title', conversation names don't
+            var cls=(typeof el.className==='string')?el.className:'';
+            if(cls.indexOf('lb-tab-title')>=0)return;
+
+            // Check ancestor for conversation-related class
+            var isConv=false;
+            var ancestor=el.parentElement;
+            for(var i=0;i<8&&ancestor;i++){
+                var aCls=(typeof ancestor.className==='string')?ancestor.className:'';
+                if(aCls.indexOf('conv')>=0||aCls.indexOf('contact')>=0||aCls.indexOf('chat-item')>=0){
+                    isConv=true;break;
+                }
+                ancestor=ancestor.parentElement;
+            }
+            if(!isConv)return;
+
             seen.add(name);
-
-            // Walk up to find the conversation row container
-            var row=el;
-            for(var i=0;i<6;i++){
-                if(!row.parentElement)break;
-                row=row.parentElement;
-            }
-
-            // Extract preview and time from siblings/children
-            var preview='';
-            var time='';
-            var allText=row.querySelectorAll('*');
-            for(var j=0;j<allText.length;j++){
-                var t=allText[j];
-                if(t===el)continue;
-                var txt=(t.textContent||'').trim();
-                if(!txt||txt===name)continue;
-                var cls=(typeof t.className==='string')?t.className:'';
-                // Time indicators
-                if(cls.indexOf('time')>=0||(txt.match(/^\d+\s*(phút|giờ|ngày)$/)||txt.match(/^\d{1,2}\/\d{1,2}$/))){
-                    if(!time)time=txt;
-                }
-                // Preview (message content)
-                else if(cls.indexOf('conv-dbname')>=0||cls.indexOf('preview')>=0||cls.indexOf('subtitle')>=0){
-                    if(!preview)preview=txt;
-                }
-            }
-
-            convs.push({name:name,time:time,preview:preview,sender:''});
+            convs.push({name:name,time:'',preview:'',sender:''});
         });
 
         if(window.ipc&&window.ipc.postMessage){
