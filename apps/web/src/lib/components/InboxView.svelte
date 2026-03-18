@@ -53,6 +53,20 @@
     sending = false;
   }
 
+  async function approveDraft() {
+    if (!aiDraft.trim() || !searchQuery.trim() || sending) return;
+    sending = true;
+    addLog(`Approving & sending to ${searchQuery}...`);
+    try {
+      await api.zalo.searchAndSend(searchQuery, aiDraft);
+      addLog('Sent!');
+      aiDraft = '';
+    } catch (e) {
+      addLog('Send failed', 'err');
+    }
+    sending = false;
+  }
+
   async function generateDraft() {
     if (chatMessages.length === 0) {
       addLog('Load Messages first', 'err');
@@ -170,16 +184,28 @@
 
     {#if aiDraft}
       <div class="border border-purple-500/30 rounded-lg p-3 bg-purple-500/10 mb-2">
-        <div class="text-sm text-[var(--text-primary)]">{aiDraft}</div>
+        <textarea
+          bind:value={aiDraft}
+          rows="3"
+          class="w-full bg-transparent border-none text-sm text-[var(--text-primary)] focus:outline-none resize-none"
+        ></textarea>
         <div class="flex gap-2 mt-2">
           <button
-            class="px-3 py-1 text-xs rounded bg-[var(--success)] text-white"
-            on:click={() => { messageText = aiDraft; addLog('Draft copied to Send box'); }}
+            class="px-3 py-1.5 text-xs font-semibold rounded bg-[var(--success)] text-white hover:opacity-90"
+            disabled={sending}
+            on:click={approveDraft}
           >
-            Use Draft
+            {sending ? 'Sending...' : 'Approve & Send'}
           </button>
           <button
-            class="px-3 py-1 text-xs rounded bg-[var(--danger)] text-white"
+            class="px-3 py-1.5 text-xs rounded bg-purple-600 text-white hover:opacity-90"
+            disabled={aiLoading}
+            on:click={generateDraft}
+          >
+            {aiLoading ? '...' : 'Regenerate'}
+          </button>
+          <button
+            class="px-3 py-1.5 text-xs rounded bg-[var(--danger)] text-white hover:opacity-90"
             on:click={() => { aiDraft = ''; addLog('Draft rejected'); }}
           >
             Reject
