@@ -905,29 +905,114 @@ Mỗi Agent (trên máy từng salesperson)
 └──────────────────────────────────────────────────────────────────┘
 ```
 
-### Multi-Account Zalo (1 Agent nhiều account)
+### Multi-Account Architecture
+
+> **Thực tế:** 1 salesperson có thể có 2-3 Zalo cá nhân, 1-2 Zalo OA,
+> 1 Messenger page, 1 Telegram bot. Mỗi account có hàng trăm conversations.
+> Tổng: 500-1000+ conversations per user.
+
+#### Zalo cá nhân (nhiều account)
+
+```
+Mỗi Zalo account = 1 WebView riêng, session persist riêng
+
+┌─ Haviz App ─────────────────────────────────────────────┐
+│                                                          │
+│  Dashboard (Svelte)                                      │
+│  ┌─────────────────┐                                     │
+│  │ Account Tabs:   │                                     │
+│  │ [Zalo 1] [Zalo 2] [OA] [Mess]                        │
+│  └─────────────────┘                                     │
+│  ┌─────────────────────────┐  ┌──────────────────────┐  │
+│  │ Unified Inbox            │  │ Active WebView       │  │
+│  │ (all accounts merged)    │  │ (Zalo account đang   │  │
+│  │                          │  │  chọn)               │  │
+│  │ 💬 Kiên (Zalo 1)        │  │                      │  │
+│  │ 📘 KH A (Zalo OA)       │  │ chat.zalo.me         │  │
+│  │ 💙 KH B (Messenger)     │  │ (logged in)          │  │
+│  │ 💬 Thu (Zalo 2)         │  │                      │  │
+│  └─────────────────────────┘  └──────────────────────┘  │
+│                                                          │
+└──────────────────────────────────────────────────────────┘
+
+Implementation:
+  - Mỗi Zalo account = 1 wry WebView, ẩn/hiện khi switch
+  - Mỗi WebView có data_store_identifier riêng (session persist)
+  - store_id: "haviz_zalo_001", "haviz_zalo_002", ...
+  - Login 1 lần per account, session lưu vĩnh viễn
+  - JS injection + IPC hoạt động trên mỗi WebView riêng
+```
+
+#### Cloud channels (multi-account, không cần WebView)
+
+```
+Zalo OA (nhiều OA):
+  → 1 webhook URL, route theo oa_id
+  → POST /webhooks/zalo-oa?oa_id=oa_12345
+  → Cloud xử lý, không cần Agent
+
+Messenger (nhiều FB Pages):
+  → 1 webhook URL, route theo page_id
+  → POST /webhooks/messenger?page_id=pg_67890
+  → Graph API, cloud xử lý
+
+Telegram (nhiều bots):
+  → 1 webhook URL per bot
+  → POST /webhooks/telegram?bot_id=bot_111
+  → Bot API, cloud xử lý
+```
+
+#### Config
 
 ```toml
 # agent_config.toml
 
-[[channels]]
+# Zalo cá nhân — mỗi account = 1 WebView
+[[accounts]]
 type = "zalo_personal"
 name = "Zalo chính"
-app_identifier = "Zalo"              # AX API target window
-account_phone = "0912345678"
+phone = "0912345678"
+store_id = "haviz_zalo_001"     # wry data_store_identifier
 
-[[channels]]
+[[accounts]]
 type = "zalo_personal"
 name = "Zalo phụ"
-app_identifier = "Zalo 2"           # Zalo instance 2
-account_phone = "0987654321"
+phone = "0987654321"
+store_id = "haviz_zalo_002"
 
-[[channels]]
+# Zalo OA — cloud webhook, không cần WebView
+[[accounts]]
 type = "zalo_oa"
 name = "OA Công ty XYZ"
 oa_id = "oa_12345"
-# → webhook qua Cloud, không qua AX API
+
+# Messenger — cloud webhook
+[[accounts]]
+type = "messenger"
+name = "FB Page Sales"
+page_id = "pg_67890"
+
+# Telegram — cloud webhook
+[[accounts]]
+type = "telegram"
+name = "Bot hỗ trợ KH"
+bot_id = "bot_111"
 ```
+
+#### Tổng hợp: Channel × Approach × Multi-account
+
+| Channel | Approach | Multi-account | Data ở đâu | Phase |
+|---|---|---|---|---|
+| **Zalo cá nhân** | WebView (wry) + JS injection + IPC | Mỗi account = 1 WebView riêng | Local (Agent) | 0-1 |
+| **Zalo cá nhân** | AX API (Swift) — chỉ Mac, đọc Zalo Desktop app | 1 Zalo Desktop = 1 account | Local (Agent) | 0 |
+| **Zalo OA** | Official API + Webhook | 1 webhook, route theo oa_id | Cloud | 1 |
+| **Messenger** | Graph API + Webhook | 1 webhook, route theo page_id | Cloud | 2 |
+| **Telegram** | Bot API + Webhook | 1 webhook per bot | Cloud | 2 |
+| **Phone/SMS** | Twilio/VNPT API | Per number | Cloud | 3 |
+
+> **Lưu ý:** AX API chỉ dùng cho Zalo Desktop app trên macOS.
+> WebView (wry) dùng cho Zalo Web (chat.zalo.me) — cross-platform hơn.
+> Cloud channels (OA, Messenger, Telegram) không cần Agent, chạy trên server.
 
 ### Contact Merging (1 khách hàng nhiều kênh)
 
