@@ -29,23 +29,27 @@ fn main() {
         println!("Chrome path: auto-detect (system Chrome)");
     }
 
-    // Cookie dir
-    let cookie_dir = dirs::data_dir()
+    // Persistent Chrome profile — saves cookies, localStorage, IndexedDB, sessions
+    let profile_dir = dirs::data_dir()
         .unwrap_or_else(|| PathBuf::from("."))
-        .join("Haviz");
-    std::fs::create_dir_all(&cookie_dir).ok();
-    let cookie_file = cookie_dir.join("zalo_web_cookies.json");
-    let has_cookies = cookie_file.exists();
-    println!("Cookie file: {} (exists: {})\n", cookie_file.display(), has_cookies);
+        .join("Haviz")
+        .join("chrome-profile");
+    std::fs::create_dir_all(&profile_dir).ok();
 
-    // Launch Chrome — VISIBLE (not headless) so user can scan QR
-    println!("Launching Chrome (visible mode)...");
+    let first_run = !profile_dir.join("Default").exists();
+    println!("Chrome profile: {}", profile_dir.display());
+    println!("First run: {} ({})\n", first_run,
+        if first_run { "sẽ cần scan QR" } else { "session đã lưu, có thể skip QR" });
+
+    // Launch Chrome — VISIBLE, with persistent profile
+    println!("Launching Chrome (visible mode, persistent profile)...");
     let mut builder = LaunchOptions::default_builder();
     builder
-        .headless(false)  // VISIBLE — user needs to see QR
+        .headless(false)
         .sandbox(false)
         .idle_browser_timeout(Duration::from_secs(600))
-        .window_size(Some((1200, 800)));
+        .window_size(Some((1200, 800)))
+        .user_data_dir(Some(profile_dir.clone()));
 
     if let Some(ref p) = chrome_path {
         builder.path(Some(p.clone()));
@@ -55,49 +59,27 @@ fn main() {
         Ok(b) => b,
         Err(e) => {
             eprintln!("Failed to launch Chrome: {}", e);
-            eprintln!("Tip: set HAVIZ_CHROME_PATH=/tmp/chrome-headless-shell-mac-arm64/chrome-headless-shell");
+            eprintln!("Tip: set HAVIZ_CHROME_PATH to chrome or chrome-headless-shell path");
             return;
         }
     };
 
-    let tab = match browser.new_tab() {
-        Ok(t) => t,
-        Err(e) => {
-            eprintln!("Failed to create tab: {}", e);
-            return;
-        }
-    };
-
-    // Load cookies if available
-    if has_cookies {
-        println!("Loading saved cookies...");
-        if let Ok(json) = std::fs::read_to_string(&cookie_file) {
-            if let Ok(cookies) = serde_json::from_str::<Vec<serde_json::Value>>(&json) {
-                println!("  {} cookies loaded", cookies.len());
-                // Set cookies via CDP
-                for cookie in &cookies {
-                    let _ = tab.set_cookies(vec![
-                        headless_chrome::protocol::cdp::Network::CookieParam {
-                            name: cookie["name"].as_str().unwrap_or("").to_string(),
-                            value: cookie["value"].as_str().unwrap_or("").to_string(),
-                            url: Some(ZALO_URL.to_string()),
-                            domain: cookie["domain"].as_str().map(|s| s.to_string()),
-                            path: cookie["path"].as_str().map(|s| s.to_string()),
-                            secure: cookie["secure"].as_bool(),
-                            http_only: cookie["httpOnly"].as_bool(),
-                            same_site: None,
-                            expires: cookie["expires"].as_f64(),
-                            priority: None,
-                            same_party: None,
-                            source_scheme: None,
-                            source_port: None,
-                            partition_key: None,
-                        }
-                    ]);
+    // Use existing tab or create new one
+    let tab = {
+        let tabs = browser.get_tabs().lock().unwrap();
+        if let Some(t) = tabs.first() {
+            t.clone()
+        } else {
+            drop(tabs);
+            match browser.new_tab() {
+                Ok(t) => t,
+                Err(e) => {
+                    eprintln!("Failed to create tab: {}", e);
+                    return;
                 }
             }
         }
-    }
+    };
 
     // Navigate
     println!("Navigating to {}...", ZALO_URL);
@@ -106,7 +88,8 @@ fn main() {
         return;
     }
     let _ = tab.wait_until_navigated();
-    std::thread::sleep(Duration::from_secs(3));
+    println!("Đợi Zalo load (5s)...");
+    std::thread::sleep(Duration::from_secs(5));
 
     // Check login state
     let is_logged_in = check_logged_in(&tab);
@@ -141,19 +124,9 @@ fn main() {
         println!("✅ Đã đăng nhập (cookies còn hiệu lực)!");
     }
 
-    // Save cookies
-    println!("\nSaving cookies...");
-    match tab.get_cookies() {
-        Ok(cookies) => {
-            let json = serde_json::to_string_pretty(&cookies).unwrap_or_default();
-            if let Err(e) = std::fs::write(&cookie_file, &json) {
-                eprintln!("  Failed to save: {}", e);
-            } else {
-                println!("  ✅ Saved {} cookies to {}", cookies.len(), cookie_file.display());
-            }
-        }
-        Err(e) => eprintln!("  Failed to get cookies: {}", e),
-    }
+    // Session auto-saved by Chrome profile — no manual cookie save needed
+    println!("\n✅ Session tự động lưu trong Chrome profile.");
+    println!("   Lần chạy sau sẽ không cần scan QR lại.\n");
 
     // Interactive menu
     loop {
@@ -175,7 +148,7 @@ fn main() {
             "2" => search_user(&tab),
             "3" => read_messages(&tab),
             "4" => page_info(&tab),
-            "5" => take_screenshot(&tab, &cookie_dir),
+            "5" => take_screenshot(&tab, &profile_dir),
             "0" | "q" | "quit" | "exit" => {
                 println!("Bye!");
                 break;
@@ -412,15 +385,14 @@ fn click_item_by_index(tab: &headless_chrome::Tab, idx: usize) {
     }
     let js_idx = idx - 1; // 0-based
 
-    let click_js = format!(r#"
+    // Step 1: Get the bounding rect of the element via JS
+    let rect_js = format!(r#"
     (() => {{
-        // Try primary selectors first
         let items = document.querySelectorAll(
             '[class*="conv-item"], [class*="contact-item"], [class*="chat-item"],
              [class*="thread"], [class*="search-result"], [class*="suggest"]'
         );
 
-        // Fallback to .truncate clickable parents
         if (items.length === 0) {{
             const truncates = document.querySelectorAll('.truncate');
             const clickables = [];
@@ -437,31 +409,98 @@ fn click_item_by_index(tab: &headless_chrome::Tab, idx: usize) {
         }}
 
         const target = items[{idx}];
-        // Try clicking different elements
-        target.click();
-        // Also dispatch mousedown/mouseup for React-style apps
-        target.dispatchEvent(new MouseEvent('mousedown', {{ bubbles: true }}));
-        target.dispatchEvent(new MouseEvent('mouseup', {{ bubbles: true }}));
-        target.dispatchEvent(new MouseEvent('click', {{ bubbles: true }}));
+        // Scroll into view first
+        target.scrollIntoView({{ block: 'center' }});
 
+        const rect = target.getBoundingClientRect();
         const name = target.querySelector('.truncate, [class*="name"]')?.textContent?.trim()
                   || target.textContent?.trim()?.slice(0, 30)
                   || 'Unknown';
-        return JSON.stringify({{ ok: true, clicked: name }});
+
+        return JSON.stringify({{
+            ok: true,
+            x: Math.round(rect.x + rect.width / 2),
+            y: Math.round(rect.y + rect.height / 2),
+            name: name
+        }});
     }})()
     "#, idx = js_idx);
 
-    match tab.evaluate(&click_js, false) {
+    match tab.evaluate(&rect_js, false) {
         Ok(r) => {
             let json_str = r.value.as_ref().and_then(|v| v.as_str()).unwrap_or("{}");
             let result: serde_json::Value = serde_json::from_str(json_str).unwrap_or_default();
-            if result["ok"].as_bool() == Some(true) {
-                println!("  ✅ Clicked: {}", result["clicked"]);
-                println!("  Đợi load conversation (2s)...");
-                std::thread::sleep(Duration::from_secs(2));
-            } else {
-                println!("  ❌ {}", result["error"].as_str().unwrap_or("Click failed"));
+
+            if result["ok"].as_bool() != Some(true) {
+                println!("  ❌ {}", result["error"].as_str().unwrap_or("Element not found"));
+                return;
             }
+
+            let x = result["x"].as_f64().unwrap_or(0.0);
+            let y = result["y"].as_f64().unwrap_or(0.0);
+            let name = result["name"].as_str().unwrap_or("?");
+
+            println!("  Clicking '{}' at ({}, {})...", name, x, y);
+
+            // Step 2: Use CDP Input.dispatchMouseEvent — real mouse click at coordinates
+            // This triggers React/Zalo event handlers properly
+            use headless_chrome::protocol::cdp::Input::{
+                DispatchMouseEvent, DispatchMouseEventTypeOption,
+            };
+
+            let press = tab.call_method(DispatchMouseEvent {
+                Type: DispatchMouseEventTypeOption::MousePressed,
+                x,
+                y,
+                button: Some(headless_chrome::protocol::cdp::Input::MouseButton::Left),
+                click_count: Some(1),
+                buttons: None,
+                modifiers: None,
+                delta_x: None,
+                delta_y: None,
+                force: None,
+                pointer_Type: None,
+                tangential_pressure: None,
+                tilt_x: None,
+                tilt_y: None,
+                timestamp: None,
+                twist: None,
+            });
+
+            if let Err(e) = press {
+                println!("  ❌ MousePressed failed: {}", e);
+                return;
+            }
+
+            std::thread::sleep(Duration::from_millis(100));
+
+            let release = tab.call_method(DispatchMouseEvent {
+                Type: DispatchMouseEventTypeOption::MouseReleased,
+                x,
+                y,
+                button: Some(headless_chrome::protocol::cdp::Input::MouseButton::Left),
+                click_count: Some(1),
+                buttons: None,
+                modifiers: None,
+                delta_x: None,
+                delta_y: None,
+                force: None,
+                pointer_Type: None,
+                tangential_pressure: None,
+                tilt_x: None,
+                tilt_y: None,
+                timestamp: None,
+                twist: None,
+            });
+
+            if let Err(e) = release {
+                println!("  ❌ MouseReleased failed: {}", e);
+                return;
+            }
+
+            println!("  ✅ Clicked: {}", name);
+            println!("  Đợi load (2s)...");
+            std::thread::sleep(Duration::from_secs(2));
         }
         Err(e) => eprintln!("  ❌ {}", e),
     }
