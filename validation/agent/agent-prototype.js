@@ -42,19 +42,21 @@ function sendToZaloDesktop(to, message) {
   '`);
 }
 
-function sendToZaloWeb(to, message) {
-  // Step 1: Focus Chrome + tìm user trong search Zalo Web
+function sendToZaloWeb(to, message, browser) {
+  const browserApp = browser || 'Google Chrome';
+  const processName = browserApp === 'Safari' ? 'Safari' : browserApp;
+
+  // Step 1: Focus browser + tìm user trong search Zalo Web
   execSync(`osascript -e '
-    tell application "Google Chrome" to activate
+    tell application "${browserApp}" to activate
     delay 0.5
     tell application "System Events"
-      tell process "Google Chrome"
+      tell process "${processName}"
         set frontmost to true
         set winPos to position of window 1
         set winSize to size of window 1
       end tell
       -- Click vào ô tìm kiếm (góc trên trái, dưới avatar)
-      -- Ô search thường ở khoảng x=200, y=180 từ góc trên trái cửa sổ
       set xSearch to (item 1 of winPos) + 200
       set ySearch to (item 2 of winPos) + 180
       click at {xSearch, ySearch}
@@ -104,10 +106,13 @@ const server = http.createServer((req, res) => {
 
         if (!message) throw new Error('Thiếu message');
 
+        const webBrowsers = ['Google Chrome', 'Safari', 'Arc', 'Microsoft Edge', 'Firefox', 'Brave Browser'];
+        const isWebBrowser = webBrowsers.includes(target);
+
         if (to) {
           // Có chỉ định người nhận → tự tìm + gửi
-          if (target === 'Google Chrome') {
-            sendToZaloWeb(to, message);
+          if (isWebBrowser) {
+            sendToZaloWeb(to, message, target);
           } else {
             sendToZaloDesktop(to, message);
           }
