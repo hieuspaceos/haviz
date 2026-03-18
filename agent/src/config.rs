@@ -8,6 +8,8 @@ pub struct Config {
     pub zalo_reader_path: PathBuf,
     pub my_name: String,
     pub groq_api_key: Option<String>,
+    pub chrome_path: Option<PathBuf>,
+    pub zalo_web_enabled: bool,
 }
 
 impl Config {
@@ -26,6 +28,8 @@ impl Config {
             zalo_reader_path: agent_dir.join("helpers").join("zalo_reader"),
             my_name: env_or("HAVIZ_MY_NAME", ""),
             groq_api_key: std::env::var("GROQ_API_KEY").ok(),
+            chrome_path: std::env::var("HAVIZ_CHROME_PATH").ok().map(PathBuf::from),
+            zalo_web_enabled: env_or("HAVIZ_ZALO_WEB", "false") == "true",
         }
     }
 }

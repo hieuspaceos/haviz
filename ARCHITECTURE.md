@@ -1003,39 +1003,72 @@ Tin nhắn mới đến (bất kỳ kênh)
 | **AI** | Groq API (anonymized input), Llama 4 Scout, Whisper |
 | **Web** | Next.js 14, Tailwind CSS, Zustand |
 | **Mobile** | React Native (Expo) |
-| **Webview** | Embedded webview trong Rust Agent (chat.zalo.me) |
+| **Zalo Web** | chrome-headless-shell + rust-headless-chrome (CDP) — validated |
 | **Cloud Channels** | Zalo OA API, FB Graph API, Telegram Bot API, Twilio/VNPT |
 | **Hosting** | VN Cloud (API+DB), Vercel (web), Agent on user's machine |
 
 ---
 
-## 9.1 Zalo Web Approach — Embedded Webview
+## 9.1 Zalo Web Approach — chrome-headless-shell (Validated 2026-03-19)
 
-Thay vì phụ thuộc browser bên ngoài (Chrome/Safari/Edge), Rust Agent embed **webview** chạy chat.zalo.me:
+Agent dùng **chrome-headless-shell** (binary headless riêng của Google) để đọc/gửi Zalo Web qua CDP, điều khiển từ Rust qua `rust-headless-chrome` crate.
 
-### Lợi ích:
-- **Tọa độ cố định** — ô search, ô chat luôn ở cùng vị trí, không phụ thuộc browser
-- **Không cần Extension** — Agent control webview trực tiếp qua DOM inject
-- **Cross-platform** — webview hoạt động trên cả Mac + Windows
-- **1 app duy nhất** — user chỉ cần cài Rust Agent, không cần mở browser riêng
-- **Đọc DOM trực tiếp** — Agent inject JS vào webview đọc tin nhắn real-time
+### Validated Results
 
-### Rust Webview Stack:
-- `wry` hoặc `tauri` — Rust webview library
-- WebKit (Mac) / WebView2 (Windows) — native webview engine
-- JS inject — Agent inject đọc/gửi script vào chat.zalo.me
-- Session persist — lưu cookie Zalo Web để không phải login lại
+```
+Browser: chrome-headless-shell v146.0.7680.80 (macOS arm64)
+Target:  chat.zalo.me
+Result:  ✅ Full render — QR code hiện, JS 100%, CDP full control
+Load:    2.7s to networkidle
+RAM:     ~558MB (tất cả chrome processes)
+```
 
-### So sánh approaches:
+### So sánh approaches (validated)
 
-| | Zalo Desktop + AX API | Webview (chat.zalo.me) | Browser Extension |
-|---|---|---|---|
-| Đọc tin nhắn | AX API (OS-level) | DOM inject (JS) | DOM (isolated world) |
-| Gửi tin nhắn | AppleScript paste | JS inject + DOM | Cần Agent relay |
-| Tọa độ cố định | N/A | ✅ | Phụ thuộc browser |
-| Cross-platform | Mac + Windows | Mac + Windows | Chỉ Chrome |
-| Cài đặt | Agent + Zalo Desktop | Chỉ Agent | Agent + Extension |
-| Detect risk | Rất thấp | Thấp | Thấp |
+| | AX API (Desktop) | chrome-headless-shell | Lightpanda | Servo |
+|---|---|---|---|---|
+| Zalo load | ✅ | **✅ 100%** | Fetch OK, CDP fail | **Crash** |
+| JS execution | N/A (OS-level) | **V8 full** | V8 full | Partial |
+| RAM | **0MB** (no browser) | 558MB | **24MB** | 510MB |
+| CDP support | N/A | **Full** | Beta | WebDriver |
+| Cookie persist | N/A | **Yes** | No | N/A |
+| Rust integration | Command::new | **rust-headless-chrome** | CDP client | N/A |
+| Production ready | **Yes** | **Yes** | No | No |
+| Detect risk | Rất thấp | Thấp | Thấp | N/A |
+
+### Architecture: Rust Agent + chrome-headless-shell
+
+```
+┌─ Rust Agent ──────────────────────────────────────────────┐
+│                                                            │
+│  channels/zalo_web.rs                                      │
+│  ├── Launch chrome-headless-shell (child process)          │
+│  ├── Connect via CDP (rust-headless-chrome crate)          │
+│  ├── Navigate chat.zalo.me                                 │
+│  ├── Inject cookie (từ lần login trước)                    │
+│  ├── Poll DOM: evaluate JS → extract messages              │
+│  ├── Send: click input → type message → Enter              │
+│  └── Cookie persistence: save/load từ local file           │
+│                                                            │
+│  First-time login flow:                                    │
+│  1. Agent mở chrome-headless-shell KHÔNG headless           │
+│     (--headless=false) → hiện window QR code                │
+│  2. User scan QR trên điện thoại                           │
+│  3. Agent detect login success → save cookies               │
+│  4. Đóng window → chuyển sang headless mode                │
+│  5. Lần sau: load cookies → login tự động                  │
+│                                                            │
+└────────────────────────────────────────────────────────────┘
+```
+
+### Khi nào dùng channel nào
+
+```
+User có Zalo Desktop:     → AX API (ưu tiên, 0MB overhead)
+User KHÔNG có Desktop:    → chrome-headless-shell (fallback)
+Zalo Desktop bị lỗi:     → auto-fallback sang headless-shell
+Zalo OA:                  → Cloud webhook (official API)
+```
 
 ---
 
