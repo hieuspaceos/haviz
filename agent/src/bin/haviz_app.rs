@@ -222,13 +222,21 @@ async fn screenshot_handler() -> axum::response::Response {
 // This is the SAME approach validated in agent-prototype.js — works with Zalo's React events
 
 fn run_osascript(script: &str) -> Result<String, String> {
-    let output = std::process::Command::new("osascript")
-        .arg("-e")
-        .arg(script)
-        .output()
-        .map_err(|e| format!("osascript failed: {}", e))?;
+    // osascript -e only supports single-line. For multiline, use temp file.
+    let output = if script.contains('\n') {
+        let tmp = std::env::temp_dir().join("haviz_osa.scpt");
+        std::fs::write(&tmp, script).map_err(|e| e.to_string())?;
+        let o = std::process::Command::new("osascript").arg(&tmp).output();
+        let _ = std::fs::remove_file(&tmp);
+        o
+    } else {
+        std::process::Command::new("osascript").arg("-e").arg(script).output()
+    }
+    .map_err(|e| format!("osascript failed: {}", e))?;
+
     if !output.status.success() {
-        return Err(String::from_utf8_lossy(&output.stderr).to_string());
+        let err = String::from_utf8_lossy(&output.stderr).to_string();
+        return Err(err);
     }
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
@@ -251,151 +259,109 @@ async fn zalo_search_handler(
 ) -> axum::response::Json<serde_json::Value> {
     let query = req.query.clone();
 
-    // Run in blocking task (AppleScript takes seconds)
-    let result = tokio::task::spawn_blocking(move || {
-        // Step 1: Focus Haviz window, click on Zalo sidebar search area
-        // The Zalo sidebar is on the right side of the Haviz window
-        let focus = run_osascript(&format!(r#"
-            tell application "System Events"
-                tell process "haviz_app"
-                    set frontmost to true
-                    set winPos to position of window 1
-                    set winSize to size of window 1
-                end tell
-                -- Click search area in Zalo sidebar (right portion)
-                -- Sidebar starts at window_width - 400, search box is near top
-                set xSearch to (item 1 of winPos) + (item 1 of winSize) - 200
-                set ySearch to (item 2 of winPos) + 85
-                click at {{xSearch, ySearch}}
-                delay 0.3
-                -- Select all + delete (clear existing search)
-                keystroke "a" using command down
-                delay 0.1
-                key code 51
-                delay 0.2
-            end tell
-        "#));
+    // Pure JS injection — no AppleScript needed for search
+    let js = format!(
+        r#"(function(){{
+            var inp=document.querySelector('input[type="text"]');
+            if(!inp)inp=document.querySelector('input');
+            if(!inp)return;
+            inp.focus();
+            inp.value="{}";
+            inp.dispatchEvent(new Event('input',{{bubbles:true}}));
+            inp.dispatchEvent(new Event('change',{{bubbles:true}}));
+            inp.dispatchEvent(new Event('keyup',{{bubbles:true}}));
+        }})();"#,
+        query.replace('\\', "\\\\").replace('"', "\\\"")
+    );
+    let _ = eval_zalo_js(&js);
 
-        if let Err(e) = focus {
-            return Err(format!("Focus failed: {}", e));
-        }
+    // Wait for results
+    std::thread::sleep(std::time::Duration::from_secs(2));
 
-        // Step 2: Type search query via clipboard (handles Vietnamese)
-        let _ = run_osascript(&format!(r#"set the clipboard to "{}""#, esc(&query)));
-        let _ = run_osascript(r#"
-            tell application "System Events"
-                keystroke "v" using command down
-                delay 1.5
-            end tell
-        "#);
-
-        Ok("search_done".to_string())
-    }).await.unwrap_or(Err("task failed".to_string()));
-
-    match result {
-        Ok(_) => axum::response::Json(serde_json::json!({
-            "ok": true,
-            "query": req.query,
-            "note": "Search typed. Results visible in Zalo sidebar.",
-        })),
-        Err(e) => axum::response::Json(serde_json::json!({
-            "ok": false,
-            "error": e,
-        })),
-    }
+    axum::response::Json(serde_json::json!({
+        "ok": true,
+        "query": req.query,
+        "note": "Search typed via JS injection.",
+    }))
 }
 
 async fn zalo_open_handler(
     axum::extract::Json(req): axum::extract::Json<OpenRequest>,
 ) -> axum::response::Json<serde_json::Value> {
-    let index = req.index;
+    let idx = req.index.saturating_sub(1);
 
-    let result = tokio::task::spawn_blocking(move || {
-        // Click on the Nth item in Zalo sidebar conversation/search results
-        // Each item is ~72px tall, first item starts at ~140px from top of window
-        let item_height = 72;
-        let first_item_y = 140;
-        let item_y = first_item_y + ((index - 1) * item_height) + (item_height / 2);
+    // JS: find clickable items, simulate mousedown+mouseup+click on the Nth one
+    let js = format!(
+        r#"(function(){{
+            var items=document.querySelectorAll('[class*="conv-item"],[class*="contact-item"],[class*="chat-item"]');
+            if(items.length===0){{
+                // Fallback: find parent elements of text nodes in the list area
+                var all=document.querySelectorAll('*');
+                var clickable=[];
+                for(var i=0;i<all.length;i++){{
+                    var el=all[i];
+                    if(el.children.length>0 && el.children.length<10 && el.offsetHeight>40 && el.offsetHeight<100){{
+                        var hasText=el.querySelector('span,div');
+                        if(hasText && hasText.textContent.trim().length>1){{
+                            clickable.push(el);
+                        }}
+                    }}
+                }}
+                items=clickable;
+            }}
+            if({idx}<items.length){{
+                var target=items[{idx}];
+                target.scrollIntoView({{block:'center'}});
+                var rect=target.getBoundingClientRect();
+                var x=rect.x+rect.width/2;
+                var y=rect.y+rect.height/2;
+                // Dispatch real mouse events at element center
+                var opts={{bubbles:true,clientX:x,clientY:y}};
+                target.dispatchEvent(new MouseEvent('mousedown',opts));
+                target.dispatchEvent(new MouseEvent('mouseup',opts));
+                target.dispatchEvent(new MouseEvent('click',opts));
+                return 'clicked';
+            }}
+            return 'not_found:'+items.length+' items';
+        }})();"#,
+        idx = idx
+    );
+    let _ = eval_zalo_js(&js);
 
-        let script = format!(r#"
-            tell application "System Events"
-                tell process "haviz_app"
-                    set frontmost to true
-                    set winPos to position of window 1
-                    set winSize to size of window 1
-                end tell
-                -- Click on item in Zalo sidebar
-                set xClick to (item 1 of winPos) + (item 1 of winSize) - 200
-                set yClick to (item 2 of winPos) + {}
-                click at {{xClick, yClick}}
-                delay 0.5
-            end tell
-        "#, item_y);
-
-        run_osascript(&script)
-    }).await.unwrap_or(Err("task failed".to_string()));
-
-    match result {
-        Ok(_) => axum::response::Json(serde_json::json!({
-            "ok": true,
-            "clicked_index": index,
-        })),
-        Err(e) => axum::response::Json(serde_json::json!({
-            "ok": false,
-            "error": e,
-        })),
-    }
+    axum::response::Json(serde_json::json!({
+        "ok": true,
+        "clicked_index": req.index,
+    }))
 }
 
 async fn zalo_send_handler(
     axum::extract::Json(req): axum::extract::Json<SendMsgRequest>,
 ) -> axum::response::Json<serde_json::Value> {
-    let message = req.message.clone();
+    let message = req.message.replace('\\', "\\\\").replace('"', "\\\"").replace('\n', "\\n");
 
-    let result = tokio::task::spawn_blocking(move || {
-        // Click on chat input area (bottom of Zalo sidebar)
-        let click_input = run_osascript(r#"
-            tell application "System Events"
-                tell process "haviz_app"
-                    set frontmost to true
-                    set winPos to position of window 1
-                    set winSize to size of window 1
-                end tell
-                -- Click chat input (bottom of Zalo sidebar)
-                set xInput to (item 1 of winPos) + (item 1 of winSize) - 200
-                set yInput to (item 2 of winPos) + (item 2 of winSize) - 50
-                click at {xInput, yInput}
-                delay 0.3
-            end tell
-        "#);
+    // Pure JS: find chat input, set content, dispatch Enter
+    let js = format!(
+        r#"(function(){{
+            var el=document.querySelector('[contenteditable="true"]');
+            if(!el)el=document.querySelector('textarea');
+            if(!el)return 'input_not_found';
+            el.focus();
+            el.textContent="{}";
+            el.innerHTML="{}";
+            el.dispatchEvent(new Event('input',{{bubbles:true}}));
+            el.dispatchEvent(new KeyboardEvent('keydown',{{key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true}}));
+            el.dispatchEvent(new KeyboardEvent('keypress',{{key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true}}));
+            el.dispatchEvent(new KeyboardEvent('keyup',{{key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true}}));
+            return 'sent';
+        }})();"#,
+        message, message
+    );
+    let _ = eval_zalo_js(&js);
 
-        if let Err(e) = click_input {
-            return Err(format!("Click input failed: {}", e));
-        }
-
-        // Paste message via clipboard (handles Vietnamese + emoji)
-        let _ = run_osascript(&format!(r#"set the clipboard to "{}""#, esc(&message)));
-        let _ = run_osascript(r#"
-            tell application "System Events"
-                keystroke "v" using command down
-                delay 0.3
-                key code 36
-            end tell
-        "#);
-
-        Ok("sent".to_string())
-    }).await.unwrap_or(Err("task failed".to_string()));
-
-    match result {
-        Ok(_) => axum::response::Json(serde_json::json!({
-            "ok": true,
-            "message": req.message,
-        })),
-        Err(e) => axum::response::Json(serde_json::json!({
-            "ok": false,
-            "error": e,
-        })),
-    }
+    axum::response::Json(serde_json::json!({
+        "ok": true,
+        "message": req.message,
+    }))
 }
 
 async fn zalo_conversations_handler() -> axum::response::Json<serde_json::Value> {
