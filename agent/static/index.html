@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Haviz — Inbox</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #1a1a2e; color: #e0e0e0; height: 100vh; display: flex; flex-direction: column; }
+  header { background: #16213e; padding: 12px 20px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid #0f3460; }
+  header h1 { font-size: 18px; color: #00b4d8; }
+  header .status { font-size: 12px; color: #4caf50; }
+  .container { display: flex; flex: 1; overflow: hidden; }
+  .sidebar { width: 320px; background: #16213e; border-right: 1px solid #0f3460; overflow-y: auto; }
+  .main { flex: 1; display: flex; flex-direction: column; }
+  .conv-item { padding: 12px 16px; cursor: pointer; border-bottom: 1px solid #0f3460; transition: background 0.2s; }
+  .conv-item:hover { background: #1a1a3e; }
+  .conv-item.active { background: #0f3460; }
+  .conv-item .name { font-weight: 600; font-size: 14px; margin-bottom: 4px; }
+  .conv-item .preview { font-size: 12px; color: #888; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .conv-item .time { font-size: 11px; color: #666; float: right; }
+  .conv-item .unread { background: #e74c3c; color: white; font-size: 10px; padding: 2px 6px; border-radius: 10px; float: right; margin-top: 4px; }
+  .messages { flex: 1; overflow-y: auto; padding: 16px; }
+  .msg { margin-bottom: 12px; max-width: 70%; }
+  .msg.inbound { margin-right: auto; }
+  .msg.outbound { margin-left: auto; }
+  .msg .bubble { padding: 10px 14px; border-radius: 12px; font-size: 14px; line-height: 1.4; }
+  .msg.inbound .bubble { background: #2d2d44; border-bottom-left-radius: 4px; }
+  .msg.outbound .bubble { background: #0f3460; border-bottom-right-radius: 4px; }
+  .msg .meta { font-size: 11px; color: #666; margin-top: 4px; }
+  .msg.inbound .meta { text-align: left; }
+  .msg.outbound .meta { text-align: right; }
+  .empty { display: flex; align-items: center; justify-content: center; flex: 1; color: #555; font-size: 16px; }
+  .draft-panel { background: #16213e; border-top: 1px solid #0f3460; padding: 12px 16px; }
+  .draft-panel .draft-text { background: #1a1a2e; border: 1px solid #0f3460; border-radius: 8px; padding: 10px; color: #e0e0e0; font-size: 14px; margin-bottom: 8px; min-height: 60px; }
+  .draft-panel .actions { display: flex; gap: 8px; }
+  .btn { padding: 8px 16px; border: none; border-radius: 6px; cursor: pointer; font-size: 13px; font-weight: 600; }
+  .btn-approve { background: #4caf50; color: white; }
+  .btn-edit { background: #ff9800; color: white; }
+  .btn-reject { background: #666; color: white; }
+  .btn:hover { opacity: 0.9; }
+  #loading { text-align: center; padding: 40px; color: #666; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Haviz</h1>
+  <span class="status" id="status">Connecting...</span>
+</header>
+<div class="container">
+  <div class="sidebar" id="sidebar">
+    <div id="loading">Loading conversations...</div>
+  </div>
+  <div class="main">
+    <div class="messages" id="messages">
+      <div class="empty">Select a conversation</div>
+    </div>
+    <div class="draft-panel" id="draftPanel" style="display:none">
+      <div style="font-size:12px;color:#888;margin-bottom:6px">AI Draft</div>
+      <div class="draft-text" id="draftText" contenteditable="true"></div>
+      <div class="actions">
+        <button class="btn btn-approve" onclick="approveDraft()">Approve & Send</button>
+        <button class="btn btn-reject" onclick="rejectDraft()">Reject</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+const API = 'http://localhost:9999/api';
+let currentConvId = null;
+let currentDraftId = null;
+
+async function fetchJSON(url) {
+  const res = await fetch(url);
+  return res.json();
+}
+
+async function postJSON(url, body) {
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  return res.json();
+}
+
+async function loadConversations() {
+  try {
+    const data = await fetchJSON(`${API}/conversations`);
+    document.getElementById('status').textContent = 'Connected';
+    document.getElementById('status').style.color = '#4caf50';
+
+    const sidebar = document.getElementById('sidebar');
+    if (!data.conversations || data.conversations.length === 0) {
+      sidebar.innerHTML = '<div id="loading">No conversations yet.<br>Open Zalo and start chatting!</div>';
+      return;
+    }
+
+    sidebar.innerHTML = data.conversations.map(c => `
+      <div class="conv-item ${c.id === currentConvId ? 'active' : ''}"
+           onclick="openConversation('${c.id}', '${escape(c.contact_name)}')">
+        <div class="name">
+          ${c.contact_name}
+          ${c.unread_count > 0 ? `<span class="unread">${c.unread_count}</span>` : ''}
+          <span class="time">${formatTime(c.last_message_at)}</span>
+        </div>
+        <div class="preview">${c.last_message_preview || ''}</div>
+      </div>
+    `).join('');
+  } catch (e) {
+    document.getElementById('status').textContent = 'Disconnected';
+    document.getElementById('status').style.color = '#e74c3c';
+  }
+}
+
+async function openConversation(id, name) {
+  currentConvId = id;
+  loadConversations(); // refresh to show active
+
+  const data = await fetchJSON(`${API}/conversations/${id}/messages?limit=50`);
+  const container = document.getElementById('messages');
+
+  if (!data.messages || data.messages.length === 0) {
+    container.innerHTML = '<div class="empty">No messages</div>';
+    return;
+  }
+
+  // Reverse to show oldest first
+  const msgs = data.messages.reverse();
+  container.innerHTML = msgs.map(m => `
+    <div class="msg ${m.direction}">
+      <div class="bubble">${escapeHtml(m.content)}</div>
+      <div class="meta">${m.sender_name} ${m.zalo_timestamp || ''}</div>
+    </div>
+  `).join('');
+
+  container.scrollTop = container.scrollHeight;
+
+  // Mark as read
+  postJSON(`${API}/conversations/${id}/read`, {});
+
+  // Check for pending drafts
+  loadDrafts();
+}
+
+async function loadDrafts() {
+  const data = await fetchJSON(`${API}/drafts`);
+  const panel = document.getElementById('draftPanel');
+
+  if (data.drafts && data.drafts.length > 0) {
+    const draft = data.drafts[0];
+    currentDraftId = draft.id;
+    document.getElementById('draftText').textContent = draft.content;
+    panel.style.display = 'block';
+  } else {
+    panel.style.display = 'none';
+  }
+}
+
+async function approveDraft() {
+  if (!currentDraftId) return;
+  const content = document.getElementById('draftText').textContent;
+  await postJSON(`${API}/drafts/${currentDraftId}/approve`, {
+    edited_content: content,
+  });
+  document.getElementById('draftPanel').style.display = 'none';
+  currentDraftId = null;
+}
+
+async function rejectDraft() {
+  if (!currentDraftId) return;
+  await postJSON(`${API}/drafts/${currentDraftId}/reject`, {});
+  document.getElementById('draftPanel').style.display = 'none';
+  currentDraftId = null;
+}
+
+function formatTime(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  const now = new Date();
+  const diff = (now - d) / 1000 / 60;
+  if (diff < 1) return 'now';
+  if (diff < 60) return Math.round(diff) + 'm';
+  if (diff < 1440) return Math.round(diff / 60) + 'h';
+  return d.toLocaleDateString('vi');
+}
+
+function escapeHtml(text) {
+  const d = document.createElement('div');
+  d.textContent = text;
+  return d.innerHTML;
+}
+
+function escape(str) {
+  return str.replace(/'/g, "\\'");
+}
+
+// Poll conversations every 5s
+loadConversations();
+setInterval(loadConversations, 5000);
+</script>
+</body>
+</html>

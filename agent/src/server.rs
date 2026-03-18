@@ -15,6 +15,9 @@ use crate::platform::macos::automation;
 type Db = Arc<Database>;
 
 pub fn create_router(db: Db) -> Router {
+    // Serve static files (Web UI) from agent/static/
+    let static_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("static");
+
     Router::new()
         .route("/api/status", get(status))
         .route("/api/conversations", get(list_conversations))
@@ -27,6 +30,7 @@ pub fn create_router(db: Db) -> Router {
         .route("/api/drafts/{id}/reject", post(reject_draft))
         .route("/api/templates", get(list_templates))
         .route("/api/templates", post(create_template))
+        .fallback_service(tower_http::services::ServeDir::new(static_dir))
         .layer(CorsLayer::permissive())
         .with_state(db)
 }
