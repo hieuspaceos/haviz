@@ -2,12 +2,15 @@
 
 all: helpers build
 
-# Compile Swift helper for AX API reading
+# Compile Swift helpers for AX API reading
 helpers:
-	@echo "Compiling zalo_reader..."
+	@echo "Compiling zalo_reader (Desktop)..."
 	swiftc helpers/zalo_reader.swift -o helpers/zalo_reader \
 		-framework Cocoa -framework ApplicationServices
-	@echo "Done: helpers/zalo_reader"
+	@echo "Compiling zalo_web_reader (Browser)..."
+	swiftc helpers/zalo_web_reader.swift -o helpers/zalo_web_reader \
+		-framework Cocoa -framework ApplicationServices
+	@echo "Done: helpers/zalo_reader + helpers/zalo_web_reader"
 
 # Build Rust agent
 build: helpers

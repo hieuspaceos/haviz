@@ -1,336 +1,133 @@
 use crate::channels::traits::{ChannelReader, ChannelSender};
 use crate::message_parser::{self, ParsedMessage};
-use headless_chrome::{Browser, LaunchOptions};
-use std::path::PathBuf;
-use std::sync::Mutex;
+use std::process::Command;
 use std::time::Duration;
 
-const ZALO_WEB_URL: &str = "https://chat.zalo.me";
-const COOKIE_FILE: &str = "zalo_web_cookies.json";
-
+/// Zalo Web channel — reads/sends via browser (Chrome, Safari, Arc, Edge, Firefox)
+/// Uses the SAME AX API approach as Zalo Desktop, but targets the browser window.
+/// Validated in: validation/browsers/test_browser_ax.swift
+///              validation/agent/agent-prototype.js (sendToZaloWeb)
 pub struct ZaloWebChannel {
-    browser: Mutex<Option<Browser>>,
-    chrome_path: Option<PathBuf>,
-    cookie_dir: PathBuf,
+    reader_path: String,
+    browser_name: String,
     my_name: String,
 }
 
 impl ZaloWebChannel {
-    pub fn new(chrome_path: Option<PathBuf>, cookie_dir: PathBuf, my_name: String) -> Self {
+    pub fn new(reader_path: String, browser_name: String, my_name: String) -> Self {
         Self {
-            browser: Mutex::new(None),
-            chrome_path,
-            cookie_dir,
+            reader_path,
+            browser_name,
             my_name,
         }
     }
 
-    /// Launch chrome-headless-shell and navigate to Zalo Web.
-    /// First time: opens visible window for QR login.
-    /// After login: saves cookies, subsequent launches use headless + cookies.
-    pub fn ensure_browser(&self) -> Result<(), String> {
-        let mut browser_lock = self.browser.lock().unwrap();
-        if browser_lock.is_some() {
-            return Ok(());
-        }
+    /// Send message via browser — uses AppleScript coordinate-based click + paste
+    /// Ported from validation/agent/agent-prototype.js sendToZaloWeb()
+    fn send_via_browser(&self, to: &str, message: &str) -> Result<(), String> {
+        let browser = &self.browser_name;
+        let process_name = if browser == "Safari" { "Safari" } else { browser };
 
-        let has_cookies = self.cookie_dir.join(COOKIE_FILE).exists();
+        // Step 1: Copy recipient name → focus browser → click search → paste → Enter
+        set_clipboard(to)?;
+        let search_script = format!(r#"
+            tell application "{browser}" to activate
+            delay 0.5
+            tell application "System Events"
+                tell process "{process_name}"
+                    set frontmost to true
+                    set winPos to position of window 1
+                    set winSize to size of window 1
+                end tell
+                -- Click search area (top-left, below avatar)
+                set xSearch to (item 1 of winPos) + 200
+                set ySearch to (item 2 of winPos) + 180
+                click at {{xSearch, ySearch}}
+                delay 0.3
+                -- Clear + paste name
+                keystroke "a" using command down
+                delay 0.1
+                keystroke "v" using command down
+                delay 1.5
+                -- Enter to select first result
+                key code 36
+                delay 0.8
+                -- Click message input (bottom of window)
+                set xMsg to (item 1 of winPos) + (item 1 of winSize) / 2
+                set yMsg to (item 2 of winPos) + (item 2 of winSize) - 30
+                click at {{xMsg, yMsg}}
+                delay 0.3
+            end tell
+        "#, browser = browser, process_name = process_name);
+        run_osascript(&search_script)?;
 
-        let mut launch_opts = LaunchOptions::default_builder();
-        launch_opts
-            .idle_browser_timeout(Duration::from_secs(600))
-            .sandbox(false);
+        // Random human-like delay
+        let delay_ms = 500 + (rand_simple() % 1000);
+        std::thread::sleep(Duration::from_millis(delay_ms));
 
-        if let Some(ref path) = self.chrome_path {
-            launch_opts.path(Some(path.clone()));
-        }
+        // Step 2: Copy message → paste → Enter
+        set_clipboard(message)?;
+        run_osascript(r#"
+            tell application "System Events"
+                keystroke "v" using command down
+                delay 0.3
+                key code 36
+            end tell
+        "#)?;
 
-        // If no cookies yet, launch visible so user can scan QR
-        if !has_cookies {
-            launch_opts.headless(false);
-            tracing::info!("No Zalo Web cookies found. Opening browser for QR login...");
-        } else {
-            launch_opts.headless(true);
-        }
-
-        let browser = Browser::new(launch_opts.build().map_err(|e| e.to_string())?)
-            .map_err(|e| format!("Failed to launch chrome: {}", e))?;
-
-        // Navigate to Zalo Web
-        let tab = browser
-            .new_tab()
-            .map_err(|e| format!("Failed to create tab: {}", e))?;
-
-        // Load cookies if available
-        if has_cookies {
-            if let Err(e) = self.load_cookies(&tab) {
-                tracing::warn!("Failed to load cookies: {}", e);
-            }
-        }
-
-        tab.navigate_to(ZALO_WEB_URL)
-            .map_err(|e| format!("Failed to navigate: {}", e))?;
-        tab.wait_until_navigated()
-            .map_err(|e| format!("Navigation timeout: {}", e))?;
-
-        // Wait for JS
-        std::thread::sleep(Duration::from_secs(3));
-
-        // Check if logged in
-        let logged_in = tab
-            .evaluate("!!document.querySelector('.truncate')", false)
-            .map(|r| r.value.as_ref().and_then(|v| v.as_bool()).unwrap_or(false))
-            .unwrap_or(false);
-
-        if logged_in {
-            tracing::info!("Zalo Web: logged in!");
-            if let Err(e) = self.save_cookies(&tab) {
-                tracing::warn!("Failed to save cookies: {}", e);
-            }
-        } else if !has_cookies {
-            tracing::info!("Waiting for QR scan... (scan QR code in the browser window)");
-            // Wait up to 120 seconds for user to scan QR
-            for i in 0..40 {
-                std::thread::sleep(Duration::from_secs(3));
-                let check = tab
-                    .evaluate("!!document.querySelector('.truncate')", false)
-                    .map(|r| r.value.as_ref().and_then(|v| v.as_bool()).unwrap_or(false))
-                    .unwrap_or(false);
-                if check {
-                    tracing::info!("QR scan detected! Saving cookies...");
-                    if let Err(e) = self.save_cookies(&tab) {
-                        tracing::warn!("Failed to save cookies: {}", e);
-                    }
-                    break;
-                }
-                if i % 10 == 0 && i > 0 {
-                    tracing::info!("Still waiting for QR scan... ({}s)", i * 3);
-                }
-            }
-        }
-
-        *browser_lock = Some(browser);
         Ok(())
-    }
-
-    fn save_cookies(
-        &self,
-        tab: &headless_chrome::Tab,
-    ) -> Result<(), String> {
-        let cookies = tab
-            .get_cookies()
-            .map_err(|e| format!("Get cookies failed: {}", e))?;
-
-        let json = serde_json::to_string_pretty(&cookies)
-            .map_err(|e| format!("Serialize cookies failed: {}", e))?;
-
-        std::fs::create_dir_all(&self.cookie_dir).ok();
-        std::fs::write(self.cookie_dir.join(COOKIE_FILE), json)
-            .map_err(|e| format!("Write cookies failed: {}", e))?;
-
-        tracing::info!(
-            "Saved {} cookies to {}",
-            cookies.len(),
-            self.cookie_dir.join(COOKIE_FILE).display()
-        );
-        Ok(())
-    }
-
-    fn load_cookies(
-        &self,
-        tab: &headless_chrome::Tab,
-    ) -> Result<(), String> {
-        let path = self.cookie_dir.join(COOKIE_FILE);
-        let json =
-            std::fs::read_to_string(&path).map_err(|e| format!("Read cookies failed: {}", e))?;
-
-        let cookies: Vec<headless_chrome::protocol::cdp::Network::CookieParam> =
-            serde_json::from_str(&json).map_err(|e| format!("Parse cookies failed: {}", e))?;
-
-        for cookie in &cookies {
-            tab.set_cookies(vec![cookie.clone()])
-                .map_err(|e| format!("Set cookie failed: {}", e))?;
-        }
-
-        tracing::info!("Loaded {} cookies from {}", cookies.len(), path.display());
-        Ok(())
-    }
-
-    /// Extract messages from the current Zalo Web page via JS evaluation
-    fn extract_messages_js(
-        &self,
-        tab: &headless_chrome::Tab,
-    ) -> Result<Vec<ParsedMessage>, String> {
-        let js = r#"
-        (() => {
-            const messages = [];
-            // Zalo Web DOM: .text = message content, .truncate = sender name
-            // .card-send-time__sendTime = timestamp
-            const msgEls = document.querySelectorAll('[class*="message"], [class*="msg-"]');
-
-            // Fallback: scan all text nodes in chat area
-            const chatArea = document.querySelector('[class*="chat-body"], [class*="conversation"], #chatArea')
-                          || document.body;
-
-            const textEls = chatArea.querySelectorAll('.text, [class*="msg-content"]');
-            const nameEls = chatArea.querySelectorAll('.truncate, [class*="sender"]');
-            const timeEls = chatArea.querySelectorAll('.card-send-time__sendTime, [class*="time"]');
-
-            // Simple extraction: pair texts with nearest name/time
-            for (let i = 0; i < textEls.length; i++) {
-                const content = textEls[i]?.textContent?.trim();
-                if (!content) continue;
-
-                // Find nearest sender name (look upward in DOM)
-                let sender = 'Unknown';
-                let el = textEls[i];
-                for (let j = 0; j < 10; j++) {
-                    el = el?.parentElement;
-                    if (!el) break;
-                    const nameEl = el.querySelector('.truncate, [class*="sender"]');
-                    if (nameEl?.textContent?.trim()) {
-                        sender = nameEl.textContent.trim();
-                        break;
-                    }
-                }
-
-                // Find nearest timestamp
-                let timestamp = '';
-                el = textEls[i];
-                for (let j = 0; j < 10; j++) {
-                    el = el?.parentElement;
-                    if (!el) break;
-                    const timeEl = el.querySelector('.card-send-time__sendTime, [class*="time"]');
-                    if (timeEl?.textContent?.trim()) {
-                        timestamp = timeEl.textContent.trim();
-                        break;
-                    }
-                }
-
-                messages.push({ sender, content, timestamp: timestamp || 'unknown' });
-            }
-
-            return JSON.stringify(messages);
-        })()
-        "#;
-
-        let result = tab
-            .evaluate(js, false)
-            .map_err(|e| format!("JS evaluate failed: {}", e))?;
-
-        let json_str = result
-            .value
-            .as_ref()
-            .and_then(|v| v.as_str())
-            .unwrap_or("[]");
-
-        let raw_msgs: Vec<message_parser::RawMessage> =
-            serde_json::from_str(json_str).unwrap_or_default();
-
-        let mut messages = Vec::new();
-        for raw in raw_msgs {
-            let direction = message_parser::determine_direction(&raw.sender, &self.my_name);
-            let hash = message_parser::compute_hash(&raw.sender, &raw.content, &raw.timestamp);
-            messages.push(ParsedMessage {
-                sender: raw.sender,
-                content: raw.content,
-                timestamp: raw.timestamp,
-                direction,
-                content_hash: hash,
-            });
-        }
-
-        Ok(messages)
     }
 }
 
 impl ChannelReader for ZaloWebChannel {
     fn read_messages(&self) -> Result<Vec<ParsedMessage>, String> {
-        self.ensure_browser()?;
+        let output = Command::new(&self.reader_path)
+            .arg(&self.browser_name)
+            .output()
+            .map_err(|e| format!("Failed to run zalo_web_reader: {}", e))?;
 
-        let browser_lock = self.browser.lock().unwrap();
-        let browser = browser_lock
-            .as_ref()
-            .ok_or("Browser not initialized")?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+            if stderr.contains("browser_not_running") || stderr.contains("zalo_tab_not_found") {
+                return Err("zalo_web_not_available".to_string());
+            }
+            return Err(format!("zalo_web_reader failed: {}", stderr));
+        }
 
-        let tabs = browser.get_tabs().lock().unwrap();
-        let tab = tabs.first().ok_or("No tab available")?;
-
-        self.extract_messages_js(tab)
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        message_parser::parse_snapshot(&stdout, &self.my_name)
     }
 }
 
 impl ChannelSender for ZaloWebChannel {
     fn send_message(&self, to: &str, message: &str) -> Result<(), String> {
-        self.ensure_browser()?;
-
-        let browser_lock = self.browser.lock().unwrap();
-        let browser = browser_lock
-            .as_ref()
-            .ok_or("Browser not initialized")?;
-
-        let tabs = browser.get_tabs().lock().unwrap();
-        let tab = tabs.first().ok_or("No tab available")?;
-
-        // Search for contact
-        let search_js = format!(
-            r#"
-            (() => {{
-                const searchInput = document.querySelector('input[placeholder*="Tìm"], input[type="text"]');
-                if (searchInput) {{
-                    searchInput.focus();
-                    searchInput.value = '{}';
-                    searchInput.dispatchEvent(new Event('input', {{ bubbles: true }}));
-                    return true;
-                }}
-                return false;
-            }})()
-            "#,
-            to.replace('\'', "\\'").replace('"', "\\\"")
-        );
-
-        tab.evaluate(&search_js, false)
-            .map_err(|e| format!("Search failed: {}", e))?;
-
-        std::thread::sleep(Duration::from_millis(1500));
-
-        // Click first search result
-        tab.evaluate(
-            r#"
-            (() => {
-                const result = document.querySelector('[class*="conv-item"], [class*="search-result"]');
-                if (result) { result.click(); return true; }
-                return false;
-            })()
-            "#,
-            false,
-        )
-        .map_err(|e| format!("Click result failed: {}", e))?;
-
-        std::thread::sleep(Duration::from_millis(1000));
-
-        // Type message and send
-        let send_js = format!(
-            r#"
-            (() => {{
-                const input = document.querySelector('[contenteditable="true"], textarea[class*="input"], #chatInput');
-                if (input) {{
-                    input.focus();
-                    input.textContent = '{}';
-                    input.dispatchEvent(new Event('input', {{ bubbles: true }}));
-                    // Press Enter
-                    input.dispatchEvent(new KeyboardEvent('keydown', {{ key: 'Enter', keyCode: 13, bubbles: true }}));
-                    return true;
-                }}
-                return false;
-            }})()
-            "#,
-            message.replace('\'', "\\'").replace('"', "\\\"").replace('\n', "\\n")
-        );
-
-        tab.evaluate(&send_js, false)
-            .map_err(|e| format!("Send failed: {}", e))?;
-
-        Ok(())
+        self.send_via_browser(to, message)
     }
+}
+
+fn set_clipboard(text: &str) -> Result<(), String> {
+    let escaped = text.replace('\\', "\\\\").replace('"', "\\\"");
+    run_osascript(&format!(r#"set the clipboard to "{}""#, escaped))
+}
+
+fn run_osascript(script: &str) -> Result<(), String> {
+    let output = Command::new("osascript")
+        .arg("-e")
+        .arg(script)
+        .output()
+        .map_err(|e| format!("osascript failed: {}", e))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("osascript error: {}", stderr));
+    }
+    Ok(())
+}
+
+fn rand_simple() -> u64 {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut hasher = DefaultHasher::new();
+    std::time::SystemTime::now().hash(&mut hasher);
+    hasher.finish()
 }

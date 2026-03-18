@@ -1,0 +1,91 @@
+=============================================
+  Servo Browser - Zalo Web Test Report
+  Date: Thu 19 Mar 2026 00:23:27 +07
+  Servo Version: v0.0.5
+  Platform: macOS arm64 (aarch64)
+=============================================
+
+--- Test 1: Binary Check ---
+[0;32m[TEST][0m Servo binary found: /Applications/Servo.app/Contents/MacOS/servo
+/Applications/Servo.app/Contents/MacOS/servo: Mach-O 64-bit executable arm64
+
+--- Test 2: Simple Page Load (example.com) ---
+[0;32m[TEST][0m example.com rendered OK (screenshot: 39621 bytes, time: 15.04s)
+
+--- Test 3: Zalo Web Load (chat.zalo.me) ---
+do open indexeddb zlocalstorage undefined
+do open indexeddb zlocalstorage undefined
+do open indexeddb zlocalstorage undefined
+do open indexeddb zlocalstorage undefined
+do open indexeddb zsecure-localstorage undefined
+User not login yet
+[debugger] Uncaught exception at :18:48: TypeError: ({}) does not refer to a JS script
+%cDừng lại! color:red; font-size:60px; font-weight: bold; -webkit-text-stroke: 1px var(--text-primary);
+%cĐây là một tính năng của trình duyệt dành cho các nhà phát triển. Nếu ai đó bảo bạn sao chép-dán nội dung nào đó vào đây để bật một tính năng của Zalo hoặc "hack" tài khoản của người khác, thì đó là hành vi lừa đảo và sẽ khiến họ có thể truy cập vào tài khoản Zalo của bạn. font-size: 18px;
+%cTruy cập https://zalo.me/faq.html để biết thêm thông tin. font-size: 18px;
+[0;32m[TEST][0m Zalo page produced screenshot (370915 bytes, time: 20.03s)
+[1;33m[WARN][0m No evidence of JS execution in stderr
+[0;31m[FAIL][0m Servo CRASHED on Zalo Web (MessagePort API issue)
+  Crash detail: close_message_port called on an unknown port
+[1;33m[WARN][0m IndexedDB errors detected (Zalo uses IndexedDB for local storage)
+
+--- Test 4: RAM Usage Measurement ---
+User not login yet
+do open indexeddb zlocalstorage undefined
+do open indexeddb zlocalstorage undefined
+do open indexeddb zlocalstorage undefined
+do open indexeddb zlocalstorage undefined
+do open indexeddb zsecure-localstorage undefined
+[debugger] Uncaught exception at :18:48: TypeError: ({}) does not refer to a JS script
+%cDừng lại! color:red; font-size:60px; font-weight: bold; -webkit-text-stroke: 1px var(--text-primary);
+%cĐây là một tính năng của trình duyệt dành cho các nhà phát triển. Nếu ai đó bảo bạn sao chép-dán nội dung nào đó vào đây để bật một tính năng của Zalo hoặc "hack" tài khoản của người khác, thì đó là hành vi lừa đảo và sẽ khiến họ có thể truy cập vào tài khoản Zalo của bạn. font-size: 18px;
+%cTruy cập https://zalo.me/faq.html để biết thêm thông tin. font-size: 18px;
+[0;32m[TEST][0m Zalo Web RAM usage: ~510 MB (RSS: 522432 KB)
+
+--- Test 5: WebDriver / Automation Support ---
+[0;32m[TEST][0m Servo supports --webdriver=PORT (WebDriver on custom port)
+[0;32m[TEST][0m Servo supports --devtools=PORT (Remote DevTools)
+[0;32m[TEST][0m Servo supports -z (headless mode)
+[0;32m[TEST][0m Servo supports -o FILE (screenshot output)
+[0;32m[TEST][0m Servo supports -x (exit after load)
+[0;32m[TEST][0m Servo supports --enable-experimental-web-platform-features
+
+--- Test 6: Debug/Profile Capabilities ---
+[0;32m[TEST][0m Debug options available: style-tree, flow-tree, display-list, gc-profile, profile-script-events
+
+=============================================
+  SUMMARY
+=============================================
+
+Servo Version:        v0.0.5 (2026-02-28)
+Platform:             macOS arm64 (aarch64-apple-darwin)
+Headless Mode:        YES (-z flag)
+Screenshot Output:    YES (-o flag)
+WebDriver Support:    YES (--webdriver=PORT)
+DevTools Support:     YES (--devtools=PORT)
+
+=== Zalo Web (chat.zalo.me) Results ===
+Page Load:            Partial (loads then crashes)
+JavaScript Execution: YES (partial - Zalo JS runs, detects no login)
+IndexedDB:            ERRORS (unsupported in headless mode)
+MessagePort API:      CRASHES Servo
+RAM Usage:            ~510 MB
+Load Time:            20.03s (before crash)
+
+=== Key Findings ===
+1. Servo CAN execute Zalo's JavaScript partially
+2. Servo CRASHES due to MessagePort API bug
+   (close_message_port called on unknown port)
+3. IndexedDB operations fail in headless mode
+4. The crash is a known Servo limitation, not a Zalo issue
+5. WebDriver automation IS available for simpler pages
+6. RAM usage is moderate (~500MB) before crash
+
+=== Verdict ===
+Servo v0.0.5 is NOT suitable for Zalo Web automation.
+The MessagePort API crash is a blocking issue.
+Servo remains alpha-quality software.
+Recommend: Monitor Servo development for MessagePort fixes.
+
+Report saved to: /Users/hieuspace/Desktop/CODE/haviz/validation/servo/results/report_20260319_002327.txt
+Screenshots saved to: /Users/hieuspace/Desktop/CODE/haviz/validation/servo/results/
