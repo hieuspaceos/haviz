@@ -11,21 +11,18 @@ function esc(str) {
 }
 
 function sendToZaloDesktop(to, message) {
-  // Step 1: Focus Zalo + mở search + tìm user
+  // Step 1: Focus Zalo + mở search + paste tên user (clipboard cho tiếng Việt)
+  execSync(`osascript -e 'set the clipboard to "${esc(to)}"'`);
   execSync(`osascript -e '
     tell application "Zalo" to activate
     delay 0.5
     tell application "System Events"
-      -- Cmd+F hoặc Cmd+K để mở search (Zalo dùng Cmd+F)
       keystroke "f" using command down
       delay 0.5
-      -- Xóa search cũ
       keystroke "a" using command down
       delay 0.1
-      -- Gõ tên user
-      keystroke "${esc(to)}"
+      keystroke "v" using command down
       delay 1
-      -- Enter để chọn kết quả đầu tiên
       key code 36
       delay 0.5
     end tell
@@ -46,7 +43,8 @@ function sendToZaloWeb(to, message, browser) {
   const browserApp = browser || 'Google Chrome';
   const processName = browserApp === 'Safari' ? 'Safari' : browserApp;
 
-  // Step 1: Focus browser + tìm user trong search Zalo Web
+  // Step 1: Copy tên user vào clipboard + Focus browser + search
+  execSync(`osascript -e 'set the clipboard to "${esc(to)}"'`);
   execSync(`osascript -e '
     tell application "${browserApp}" to activate
     delay 0.5
@@ -61,11 +59,10 @@ function sendToZaloWeb(to, message, browser) {
       set ySearch to (item 2 of winPos) + 180
       click at {xSearch, ySearch}
       delay 0.3
-      -- Xóa text cũ
+      -- Xóa text cũ + paste tên user (clipboard cho tiếng Việt)
       keystroke "a" using command down
       delay 0.1
-      -- Gõ tên user
-      keystroke "${esc(to)}"
+      keystroke "v" using command down
       delay 1.5
       -- Enter chọn kết quả đầu tiên
       key code 36
