@@ -1603,15 +1603,403 @@ depth 22: AXImage      → Hình ảnh (desc chứa filename)
 
 ---
 
-## 12. Phase Roadmap (Updated 2026-03-18)
+## 12. Execution Roadmap (Thực tế)
 
-| Phase | Thời gian | Scope |
-|---|---|---|
-| **Phase 1 MVP** | 8 tuần | Rust Agent (AX API + Webview + Safety Layer) + Inbox + AI Draft + Template + Mobile |
-| **Phase 2 Intelligence** | Tháng 3-4 | Voice Report + Analytics + Training + Chatbot |
-| **Phase 3 Platform** | Tháng 5-6 | REST API + MCP + SDK + Messenger + White-label |
+> **Nguyên tắc:** Ship nhanh → validate → iterate. Không build thứ chưa cần.
+> Mỗi phase kết thúc bằng **validation checkpoint** — nếu fail thì pivot.
 
-### Phase 1 Safety Checklist (xem chi tiết Section 10.12)
+### Tổng quan
+
+```
+Phase 0: Prototype (4-6 tuần)  → 5-10 beta users, 0đ revenue
+Phase 1: MVP (4-6 tuần)       → 50 users, first revenue
+Phase 2: Growth (8-12 tuần)   → 200+ users, team features
+Phase 3: Scale (ongoing)      → 1000+ users, multi-channel, platform
+```
+
+---
+
+### PHASE 0: Working Prototype — "Chạy được trên máy mình"
+
+**Mục tiêu:** Agent đọc Zalo → AI draft → gửi lại. Chạy 100% local, chưa cần cloud.
+**Thời gian:** 4-6 tuần
+**Team:** 1 dev (bạn)
+
+#### Tuần 1-2: Rust Agent Core
+
+```
+□ Khung Agent cơ bản
+  ├── Cargo.toml: axum 0.7, tokio, rusqlite, reqwest
+  ├── main.rs: tray icon + event loop
+  ├── server.rs: Axum HTTP server :9999
+  └── tray.rs: system tray (tray-item crate)
+
+□ Zalo Desktop Reader (ĐÃ VALIDATE)
+  ├── polling.rs: poll AX API mỗi 3s
+  ├── platform/macos/accessibility.rs: traverse hierarchy
+  ├── message_parser.rs: depth 18/21/22 → structured message
+  └── Detect tin nhắn mới (hash so sánh)
+
+□ Local SQLite
+  ├── db.rs: rusqlite connection, WAL mode
+  ├── Schema: messages, conversations, contacts (đơn giản)
+  └── INSERT message khi detect tin mới
+
+DELIVERABLE: Agent chạy → đọc Zalo → lưu SQLite → log ra terminal
+```
+
+#### Tuần 3-4: AI Draft + Send
+
+```
+□ AI Draft Engine
+  ├── anonymizer.rs: regex xóa tên, SĐT → "Customer"
+  ├── ai.rs: call Groq API (reqwest + serde)
+  │   System prompt: style cơ bản + org context
+  │   Messages: 3 tin gần nhất (anonymized)
+  ├── Nhận draft → fill lại tên thật từ SQLite
+  └── Lưu draft vào SQLite (status: pending)
+
+□ Template Matching (đơn giản)
+  ├── templates table trong SQLite
+  ├── Exact + contains match (chưa cần cosine similarity)
+  ├── Match → dùng template, skip AI call
+  └── 10-20 templates mẫu hard-coded
+
+□ Gửi tin nhắn (ĐÃ VALIDATE)
+  ├── channels/zalo_desktop.rs: AppleScript send
+  ├── Cmd+F → search tên → paste → Enter
+  ├── Random delay 1-3s giữa các bước
+  └── Rate limit đơn giản: max 5 tin/phút
+
+DELIVERABLE: Agent đọc tin → AI draft → user approve từ terminal/log → Agent gửi
+```
+
+#### Tuần 5-6: Web UI + Polish
+
+```
+□ Web UI (served from Agent, localhost:9999)
+  ├── Static HTML/JS (hoặc Next.js SSG embed trong Agent)
+  ├── Trang Inbox: list conversations, click xem messages
+  ├── AI Draft panel: hiện draft, nút Approve / Edit / Reject
+  ├── Trang Templates: CRUD templates
+  └── Giao diện đơn giản, Tailwind CSS
+
+□ Style Learning (v1 đơn giản)
+  ├── Lấy 50 tin outbound từ SQLite
+  ├── 1 lần gọi Groq: "Phân tích style viết" → JSON profile
+  ├── Cache profile trong SQLite
+  └── Inject vào system prompt cho AI draft
+
+□ Polish
+  ├── Agent auto-start (LaunchAgent plist)
+  ├── Error handling cơ bản (retry, log)
+  ├── Setup guide: cách cho Accessibility permission
+  └── README cho beta testers
+
+DELIVERABLE: App hoàn chỉnh, chạy local, cho người khác dùng thử được
+```
+
+#### Validation Checkpoint Phase 0
+
+```
+┌─ PHẢI ĐẠT ĐƯỢC ────────────────────────────────────────────────┐
+│                                                                  │
+│  □ 5-10 người dùng thử (bạn bè, đồng nghiệp, sales quen biết) │
+│  □ Chạy ổn định 1 tuần không crash                              │
+│  □ Zalo không ban sau 1 tuần sử dụng bình thường                │
+│  □ AI draft quality: > 50% approve without edit                  │
+│  □ Feedback: ít nhất 3/5 người nói "có ích, muốn dùng tiếp"    │
+│                                                                  │
+│  NẾU FAIL:                                                       │
+│  - AI quality thấp → cải thiện prompt, thêm templates            │
+│  - Zalo ban → pivot sang chỉ Zalo OA (official API)             │
+│  - Không ai muốn dùng → pivot features hoặc target audience     │
+│  - Crash nhiều → fix bugs trước khi tiếp Phase 1                │
+│                                                                  │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+### PHASE 1: MVP — "Người lạ trả tiền"
+
+**Mục tiêu:** Cloud + team features + payment. First paying customers.
+**Thời gian:** 4-6 tuần (sau Phase 0 validate OK)
+**Điều kiện bắt đầu:** Phase 0 validation pass
+
+#### Tuần 7-8: Cloud Backend
+
+```
+□ Haviz Cloud API (Hono + Node.js)
+  ├── Auth: Supabase Auth (email + password)
+  ├── REST: /auth, /templates, /agents, /analytics
+  ├── WebSocket: Agent ↔ Server connection
+  └── Deploy: VPS tại VN (1 server đủ)
+
+□ Cloud Database (PostgreSQL)
+  ├── Tầng 1 tables: organizations, users, channels, agents
+  ├── Templates (shared, team level)
+  ├── Daily metrics (nhận từ Agent)
+  └── Drizzle ORM + migrations
+
+□ Agent ↔ Cloud sync
+  ├── ws_client.rs: WebSocket connect → Cloud
+  ├── sync.rs: gửi metrics (chỉ số, không tin nhắn)
+  ├── Download templates mới từ Cloud
+  └── Agent auth: token từ Cloud, lưu Keychain
+```
+
+#### Tuần 9-10: Zalo OA + Mobile
+
+```
+□ Zalo OA Integration (Cloud channel, 0% risk)
+  ├── POST /webhooks/zalo-oa: nhận tin nhắn
+  ├── Zalo OA API: gửi tin nhắn (official)
+  ├── AI draft cho OA messages (cloud-side)
+  └── Inbox hiển thị cả OA + Desktop
+
+□ Mobile App (React Native / Expo, đơn giản)
+  ├── Login → connect Cloud API
+  ├── Inbox: list conversations (Tầng 1+2 từ Cloud)
+  ├── AI Draft: xem + Approve / Reject
+  ├── Push notification: tin nhắn mới
+  └── KHÔNG cần đọc full messages (chỉ preview + approve)
+```
+
+#### Tuần 11-12: Payment + Launch
+
+```
+□ Payment
+  ├── Pricing page trên web
+  ├── Payment gateway: VNPay / MoMo / Stripe
+  ├── Free tier: 50 AI drafts/tháng
+  ├── Pro: 199k/tháng (unlimited)
+  └── Trial: 14 ngày Pro free
+
+□ Landing Page + Onboarding
+  ├── haviz.vn: landing page (benefits, pricing, download)
+  ├── Onboarding flow: signup → download Agent → setup
+  ├── Video hướng dẫn: 3 phút setup
+  └── Support: Zalo group hoặc Telegram
+
+□ Launch
+  ├── Post lên các group sales/marketing VN
+  ├── Facebook groups cho salesperson
+  ├── Tặng 3 tháng Pro cho 20 early adopters
+  └── Collect feedback liên tục
+```
+
+#### Validation Checkpoint Phase 1
+
+```
+┌─ PHẢI ĐẠT ĐƯỢC ────────────────────────────────────────────────┐
+│                                                                  │
+│  □ 50+ registered users                                          │
+│  □ 10+ daily active users                                        │
+│  □ 3-5 paying users (chứng minh willingness to pay)              │
+│  □ Churn: < 30% sau tháng đầu                                   │
+│  □ NPS score: > 30 (hỏi "bạn có giới thiệu cho người khác?")   │
+│  □ Zalo vẫn không ban sau 1 tháng multi-user                    │
+│                                                                  │
+│  NẾU FAIL:                                                       │
+│  - 0 paying users → pricing sai, hoặc value chưa đủ             │
+│    → Thử: giảm giá, thêm features, đổi target audience          │
+│  - Churn cao → product chưa sticky                               │
+│    → Thử: cải thiện AI quality, thêm templates, UX tốt hơn      │
+│  - Zalo ban → pivot 100% sang Zalo OA only                       │
+│                                                                  │
+│  NẾU PASS → có REVENUE → Phase 2                                │
+│                                                                  │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+### PHASE 2: Growth — "Team trả tiền"
+
+**Mục tiêu:** Team features, 200+ users, sustainable revenue.
+**Thời gian:** 8-12 tuần
+**Điều kiện bắt đầu:** Phase 1 có ít nhất 5 paying users
+
+#### Tuần 13-16: Team Features
+
+```
+□ Team Dashboard (Cloud)
+  ├── Manager view: team performance (metrics từ Agents)
+  ├── Conversations list (across team members)
+  ├── Response time ranking, AI adoption rate
+  └── Basic analytics charts
+
+□ Shared Templates
+  ├── Org-level templates (manager tạo, team dùng)
+  ├── Template categories + search
+  ├── Usage tracking: template nào hiệu quả nhất
+  └── Import/export templates
+
+□ Team Pricing
+  ├── Team plan: 399k/user
+  ├── Billing: per-org, manager trả cho cả team
+  ├── Roles: owner, admin, member
+  └── Invite flow: email invite → join org
+```
+
+#### Tuần 17-20: Multi-channel + Analytics
+
+```
+□ Facebook Messenger (Cloud channel)
+  ├── FB Graph API integration
+  ├── Webhook: nhận tin nhắn từ FB Page
+  ├── Gửi reply qua API
+  └── Unified inbox: Zalo + OA + Messenger
+
+□ Enhanced Analytics
+  ├── AI insights (Agent anonymize → Groq → dashboard)
+  ├── Top topics, sentiment trends
+  ├── Template effectiveness reports
+  └── Weekly email report cho manager
+
+□ Improvements from feedback
+  ├── UX improvements (từ user feedback)
+  ├── AI draft quality improvements
+  ├── Bug fixes, stability
+  └── Performance optimization
+```
+
+#### Tuần 21-24: Scale preparation
+
+```
+□ E2E Encryption (Tầng 2)
+  ├── crypto.rs: AES-256-GCM
+  ├── Key trong OS Keychain
+  ├── Encrypt metadata trước khi sync Cloud
+  └── Web UI decrypt in-browser
+
+□ Offline sync
+  ├── sync_queue table
+  ├── Resume sync khi online
+  └── Last-write-wins cho conflicts
+
+□ Agent stability
+  ├── Auto-update OTA
+  ├── Crash recovery
+  ├── SQLite backup daily
+  └── Session management (detect Zalo logout)
+```
+
+#### Validation Checkpoint Phase 2
+
+```
+┌─ PHẢI ĐẠT ĐƯỢC ────────────────────────────────────────────────┐
+│                                                                  │
+│  □ 200+ total users, 50+ paying                                 │
+│  □ 5+ team accounts (mỗi team 5-10 users)                       │
+│  □ MRR (Monthly Recurring Revenue): > 10 triệu/tháng            │
+│  □ Churn < 10% monthly                                           │
+│  □ At least 2 channels hoạt động (Zalo + OA hoặc Messenger)     │
+│  □ Positive unit economics (revenue > server cost)               │
+│                                                                  │
+│  NẾU PASS → Phase 3                                             │
+│  NẾU FAIL → iterate Phase 2, đừng thêm features mới             │
+│                                                                  │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+### PHASE 3: Scale — "Platform"
+
+**Mục tiêu:** 1000+ users, multi-channel, revenue > 100 triệu/tháng.
+**Thời gian:** Ongoing
+**Điều kiện bắt đầu:** Phase 2 MRR > 10 triệu
+
+```
+Chỉ build khi có revenue ổn định:
+
+□ Windows Agent
+  ├── Win32 UI Automation thay AX API
+  ├── SendInput thay AppleScript
+  └── MSI installer + Authenticode signing
+
+□ Telegram + Phone/SMS integration
+
+□ REST API + SDK
+  ├── Public API cho developers
+  ├── npm/pip SDK
+  └── API pricing tier
+
+□ Template Marketplace
+  ├── Creator upload template packs
+  ├── Revenue share 70/30
+  └── Review + approval flow
+
+□ Voice Reports (Phase 2 Intelligence)
+  ├── Record → Whisper → transcript
+  ├── AI extract action items
+  └── Auto-create follow-ups
+
+□ Advanced features
+  ├── Chatbot semi-auto mode
+  ├── MCP server cho AI agents
+  ├── White-label
+  ├── Enterprise SSO
+  └── On-premise option
+
+□ Thuê thêm dev
+  ├── 1 Rust dev (Agent)
+  ├── 1 Fullstack (Web + API)
+  ├── 1 Mobile dev
+  └── Khi MRR > 50 triệu
+```
+
+---
+
+### Timeline tổng thể (thực tế)
+
+```
+2026
+Mar  Apr  May  Jun  Jul  Aug  Sep  Oct  Nov  Dec
+ │    │    │    │    │    │    │    │    │    │
+ ├────┤    │    │    │    │    │    │    │    │
+ Phase 0   │    │    │    │    │    │    │    │
+ Prototype │    │    │    │    │    │    │    │
+ 5-10 users│    │    │    │    │    │    │    │
+           │    │    │    │    │    │    │    │
+           ├────┤    │    │    │    │    │    │
+           Phase 1   │    │    │    │    │    │
+           MVP       │    │    │    │    │    │
+           50 users  │    │    │    │    │    │
+           1st rev   │    │    │    │    │    │
+                     │    │    │    │    │    │
+                     ├─────────┤    │    │    │
+                     Phase 2        │    │    │
+                     Growth         │    │    │
+                     200+ users     │    │    │
+                     Team features  │    │    │
+                                    │    │    │
+                                    ├─────────────
+                                    Phase 3
+                                    Scale
+                                    1000+ users
+                                    Platform
+
+Revenue:
+  Mar-Apr: 0đ
+  May-Jun: 2-5 triệu/tháng (first paying users)
+  Jul-Sep: 10-20 triệu/tháng (teams onboard)
+  Oct-Dec: 30-50 triệu/tháng (growth)
+```
+
+### Tóm tắt: Mỗi Phase build gì
+
+| | Phase 0 | Phase 1 | Phase 2 | Phase 3 |
+|---|---|---|---|---|
+| **Agent** | AX API + SQLite + AI + Send | + Cloud sync | + E2E + OTA update | + Windows |
+| **AI** | Groq draft + templates | + Style learning | + Analytics insights | + Chatbot |
+| **Web** | Localhost UI đơn giản | + Cloud web app | + Team dashboard | + API + Marketplace |
+| **Mobile** | Không | Basic (approve drafts) | + Full inbox | + Push + Voice |
+| **Channels** | Zalo Desktop only | + Zalo OA | + Messenger | + Telegram + Phone |
+| **Cloud** | Không | Auth + Templates + Metrics | + E2E + Analytics | + Full platform |
+| **Revenue** | 0đ | 2-5 triệu | 10-50 triệu | 100+ triệu |
 
 ---
 
