@@ -2,29 +2,21 @@
 name = "haviz-agent"
 version = "0.1.0"
 edition = "2021"
-description = "Haviz Desktop Agent — Zalo UI automation"
+description = "Haviz Desktop Agent — Local-first Zalo automation + AI drafts"
 
 [dependencies]
 tokio = { version = "1", features = ["full"] }
 axum = "0.7"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tray-icon = "0.14"
-tokio-tungstenite = "0.21"
 uuid = { version = "1", features = ["v4"] }
-chrono = "0.4"
+chrono = { version = "0.4", features = ["serde"] }
 tracing = "0.1"
 tracing-subscriber = "0.3"
 regex = "1"
-
-[target.'cfg(target_os = "macos")'.dependencies]
-# AX API via core-foundation + accessibility
-# osascript via std::process::Command
-
-[target.'cfg(windows)'.dependencies]
-windows = { version = "0.54", features = [
-  "Win32_UI_WindowsAndMessaging",
-  "Win32_UI_Accessibility",
-  "Win32_System_DataExchange",
-  "Win32_UI_Input_KeyboardAndMouse",
-] }
+rusqlite = { version = "0.31", features = ["bundled"] }
+reqwest = { version = "0.12", features = ["json"] }
+tower-http = { version = "0.5", features = ["cors", "fs"] }
+sha2 = "0.10"
+hex = "0.4"
+dirs = "5"
