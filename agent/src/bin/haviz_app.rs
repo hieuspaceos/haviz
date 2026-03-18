@@ -89,7 +89,21 @@ fn main() {
             // JS calls: window.ipc.postMessage(JSON.stringify(data))
             let body = req.body();
             if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(body) {
-                *ZALO_MESSAGES.lock().unwrap() = Some(parsed);
+                // Route by type field
+                if let Some(msg_type) = parsed.get("type").and_then(|t| t.as_str()) {
+                    match msg_type {
+                        "conversations" => {
+                            let data = parsed.get("data").cloned().unwrap_or(serde_json::json!([]));
+                            *ZALO_CONVERSATIONS.lock().unwrap() = Some(data);
+                        }
+                        _ => {
+                            *ZALO_MESSAGES.lock().unwrap() = Some(parsed);
+                        }
+                    }
+                } else {
+                    // No type field — treat as messages (backward compat)
+                    *ZALO_MESSAGES.lock().unwrap() = Some(parsed);
+                }
             }
         })
         .with_bounds(Rect {
@@ -695,31 +709,79 @@ async fn zalo_messages_callback(
         .unwrap()
 }
 
+// Shared conversation buffer
+static ZALO_CONVERSATIONS: Mutex<Option<serde_json::Value>> = Mutex::new(None);
+
 async fn zalo_conversations_handler() -> axum::response::Json<serde_json::Value> {
-    // Use AX API to read conversations from the Haviz WebView
-    let reader_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("helpers").join("zalo_web_reader");
+    // Clear previous
+    *ZALO_CONVERSATIONS.lock().unwrap() = None;
 
-    let result = tokio::task::spawn_blocking(move || {
-        std::process::Command::new(&reader_path).arg("haviz_app").output()
-    }).await;
+    // Extract conversation list via JS + IPC
+    let _ = eval_zalo_js(r#"(function(){
+        var convs=[];
+        var seen=new Set();
 
-    match result {
-        Ok(Ok(output)) if output.status.success() => {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            match serde_json::from_str::<serde_json::Value>(&stdout) {
-                Ok(data) => axum::response::Json(data),
-                Err(_) => axum::response::Json(serde_json::json!({"ok": false, "error": "parse_error"})),
+        // Find .truncate elements — these are conversation names in sidebar
+        var truncates=document.querySelectorAll('.truncate');
+        var skip=['Tin nhắn','Danh bạ','Zalo Cloud','My Documents','Công cụ','Cài đặt'];
+
+        truncates.forEach(function(el){
+            var name=el.textContent?el.textContent.trim():'';
+            if(!name||seen.has(name)||skip.indexOf(name)>=0)return;
+            seen.add(name);
+
+            // Walk up to find the conversation row container
+            var row=el;
+            for(var i=0;i<6;i++){
+                if(!row.parentElement)break;
+                row=row.parentElement;
             }
+
+            // Extract preview and time from siblings/children
+            var preview='';
+            var time='';
+            var allText=row.querySelectorAll('*');
+            for(var j=0;j<allText.length;j++){
+                var t=allText[j];
+                if(t===el)continue;
+                var txt=(t.textContent||'').trim();
+                if(!txt||txt===name)continue;
+                var cls=(typeof t.className==='string')?t.className:'';
+                // Time indicators
+                if(cls.indexOf('time')>=0||(txt.match(/^\d+\s*(phút|giờ|ngày)$/)||txt.match(/^\d{1,2}\/\d{1,2}$/))){
+                    if(!time)time=txt;
+                }
+                // Preview (message content)
+                else if(cls.indexOf('conv-dbname')>=0||cls.indexOf('preview')>=0||cls.indexOf('subtitle')>=0){
+                    if(!preview)preview=txt;
+                }
+            }
+
+            convs.push({name:name,time:time,preview:preview,sender:''});
+        });
+
+        if(window.ipc&&window.ipc.postMessage){
+            window.ipc.postMessage(JSON.stringify({type:'conversations',data:convs}));
         }
-        _ => {
-            // AX API might not find "haviz_app" as browser name
-            // Fallback: return empty with helpful message
-            axum::response::Json(serde_json::json!({
-                "ok": false,
-                "conversations": [],
-                "note": "AX API reader could not find Haviz WebView. Conversations visible in sidebar.",
-            }))
+    })();"#);
+
+    // Wait for IPC
+    for _ in 0..20 {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        if ZALO_CONVERSATIONS.lock().unwrap().is_some() {
+            break;
         }
+    }
+
+    let data = ZALO_CONVERSATIONS.lock().unwrap().take();
+    match data {
+        Some(convs) => axum::response::Json(serde_json::json!({
+            "ok": true,
+            "conversations": convs,
+        })),
+        None => axum::response::Json(serde_json::json!({
+            "ok": true,
+            "conversations": [],
+        })),
     }
 }
