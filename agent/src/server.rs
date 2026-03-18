@@ -15,8 +15,13 @@ use crate::platform::macos::automation;
 type Db = Arc<Database>;
 
 pub fn create_router(db: Db) -> Router {
-    // Serve static files (Web UI) from agent/static/
-    let static_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("static");
+    // Serve Svelte build output, fallback to agent/static/
+    let project_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).parent().unwrap().to_path_buf();
+    let static_dir = if project_root.join("apps/web/dist").exists() {
+        project_root.join("apps/web/dist")
+    } else {
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("static")
+    };
 
     Router::new()
         .route("/api/status", get(status))

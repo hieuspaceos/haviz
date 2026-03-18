@@ -63,9 +63,16 @@ fn main() {
 
     let store_id: [u8; 16] = *b"haviz_zalo_web_1";
 
-    // Left: Dashboard
+    // Left: Dashboard — use Vite dev server if running, otherwise Agent static
+    let dashboard_url = if reqwest::blocking::get("http://localhost:3000").is_ok() {
+        "http://localhost:3000" // Vite dev server (hot reload)
+    } else {
+        "http://localhost:9999" // Production (built static files)
+    };
+    println!("Dashboard: {}", dashboard_url);
+
     let _dashboard = WebViewBuilder::new()
-        .with_url("http://localhost:9999")
+        .with_url(dashboard_url)
         .with_bounds(Rect {
             position: LogicalPosition::new(0.0, 0.0).into(),
             size: LogicalSize::new(WINDOW_W - SIDEBAR_W, WINDOW_H).into(),
