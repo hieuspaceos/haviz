@@ -1,0 +1,14 @@
+{
+  "manifest_version": 3,
+  "name": "Haviz - Zalo Reader",
+  "version": "0.3",
+  "description": "Đọc và gửi tin nhắn Zalo Web",
+  "permissions": ["activeTab"],
+  "content_scripts": [
+    {
+      "matches": ["https://chat.zalo.me/*"],
+      "js": ["haviz.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}
