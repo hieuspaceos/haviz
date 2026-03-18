@@ -51,8 +51,9 @@
 │  │ Zalo Desktop App │◄── AX API (đọc) + AppleScript    │
 │  └──────────────────┘    (gửi) via Rust Agent           │
 │  ┌──────────────────┐                                   │
-│  │ Zalo Web (Chrome)│◄── Extension DOM + Agent HTTP ────┘
-│  └──────────────────┘
+│  │ Zalo Web Webview │◄── Embedded webview trong Rust    │
+│  │ (chat.zalo.me)   │    Agent — tọa độ cố định,       │
+│  └──────────────────┘    DOM inject + Agent HTTP ───────┘
 │  ┌──────────────────┐
 │  │ Zalo OA          │──── Official API + Webhook
 │  └──────────────────┘
@@ -81,11 +82,12 @@ haviz/
 │   │   ├── polling.rs              # Poll Zalo mỗi 3s cho tin nhắn mới
 │   │   ├── message_parser.rs       # Parse raw AX text → structured message
 │   │   ├── tray.rs                 # System tray icon + menu
+│   │   ├── webview.rs              # Embedded webview (chat.zalo.me)
 │   │   ├── channels/
 │   │   │   ├── mod.rs
 │   │   │   ├── traits.rs           # ChannelReader + ChannelSender traits
 │   │   │   ├── zalo_desktop.rs     # Zalo Desktop automation
-│   │   │   └── zalo_web.rs         # Zalo Web bridge (extension relay)
+│   │   │   └── zalo_webview.rs     # Zalo Web via embedded webview
 │   │   └── platform/
 │   │       ├── mod.rs
 │   │       ├── macos/
@@ -398,27 +400,60 @@ analytics_events (id, org_id, event_type, conversation_id, properties)
 
 | Layer | Technology |
 |---|---|
-| **Agent** | Rust, axum 0.7, tokio, AX API (Mac), Win32 (Windows) |
+| **Agent** | Rust, axum 0.7, tokio, AX API (Mac), Win32 (Windows), embedded webview |
 | **Backend** | Hono, Node.js, Drizzle ORM |
 | **Database** | PostgreSQL (Supabase) |
 | **Cache/Queue** | Redis + BullMQ |
 | **AI** | Groq API, Llama 4 Scout, Whisper |
 | **Web** | Next.js 14, Tailwind CSS, Zustand |
 | **Mobile** | React Native (Expo) |
-| **Extension** | Chrome Manifest V3 |
+| **Webview** | Embedded webview trong Rust Agent (chat.zalo.me) — thay Chrome Extension |
 | **Hosting** | Vercel (web), Railway (API), Supabase (DB) |
 
 ---
 
-## 9. Validated (2026-03-18)
+## 9. Zalo Web Approach — Embedded Webview
+
+Thay vì phụ thuộc browser bên ngoài (Chrome/Safari/Edge), Rust Agent embed **webview** chạy chat.zalo.me:
+
+### Lợi ích:
+- **Tọa độ cố định** — ô search, ô chat luôn ở cùng vị trí, không phụ thuộc browser
+- **Không cần Extension** — Agent control webview trực tiếp qua DOM inject
+- **Cross-platform** — webview hoạt động trên cả Mac + Windows
+- **1 app duy nhất** — user chỉ cần cài Rust Agent, không cần mở browser riêng
+- **Đọc DOM trực tiếp** — Agent inject JS vào webview đọc tin nhắn real-time
+
+### Rust Webview Stack:
+- `wry` hoặc `tauri` — Rust webview library
+- WebKit (Mac) / WebView2 (Windows) — native webview engine
+- JS inject — Agent inject đọc/gửi script vào chat.zalo.me
+- Session persist — lưu cookie Zalo Web để không phải login lại
+
+### So sánh approaches:
+
+| | Zalo Desktop + AX API | Webview (chat.zalo.me) | Browser Extension |
+|---|---|---|---|
+| Đọc tin nhắn | AX API (OS-level) | DOM inject (JS) | DOM (isolated world) |
+| Gửi tin nhắn | AppleScript paste | JS inject + DOM | Cần Agent relay |
+| Tọa độ cố định | N/A | ✅ | Phụ thuộc browser |
+| Cross-platform | Mac + Windows | Mac + Windows | Chỉ Chrome |
+| Cài đặt | Agent + Zalo Desktop | Chỉ Agent | Agent + Extension |
+| Detect risk | Rất thấp | Thấp | Thấp |
+
+---
+
+## 10. Validated (2026-03-18)
 
 | Test | Kết quả |
 |---|---|
 | AX API đọc Zalo Desktop (cá nhân, group, OA) | ✅ |
 | Chrome Extension đọc Zalo Web DOM | ✅ |
 | Agent gửi tin Zalo Desktop (AppleScript) | ✅ |
-| Agent gửi tin Zalo Web (auto-click + paste) | ✅ |
+| Agent gửi tin Zalo Web — Chrome (auto-click + paste) | ✅ |
+| Agent gửi tin Zalo Web — Safari | ✅ |
+| Agent gửi tin Zalo Web — Edge | ✅ |
 | Agent tự tìm user theo tên + gửi | ✅ |
+| Clipboard paste cho tiếng Việt có dấu | ✅ |
 | Zalo không detect được (OS-level input) | ✅ |
 
 ### AX API Structure (Zalo Desktop - Mac)
@@ -439,10 +474,10 @@ depth 22: AXImage      → Hình ảnh (desc chứa filename)
 
 ---
 
-## 10. Phase Roadmap
+## 12. Phase Roadmap
 
 | Phase | Thời gian | Scope |
 |---|---|---|
-| **Phase 1 MVP** | 8 tuần | Zalo connect + Inbox + AI Draft + Template + Mobile |
+| **Phase 1 MVP** | 8 tuần | Rust Agent (AX API + Webview) + Inbox + AI Draft + Template + Mobile |
 | **Phase 2 Intelligence** | Tháng 3-4 | Voice Report + Analytics + Training + Chatbot |
 | **Phase 3 Platform** | Tháng 5-6 | REST API + MCP + SDK + Messenger + White-label |
