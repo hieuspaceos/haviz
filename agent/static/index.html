@@ -3,202 +3,315 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Haviz — Inbox</title>
+<title>Haviz — Dashboard</title>
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
-  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #1a1a2e; color: #e0e0e0; height: 100vh; display: flex; flex-direction: column; }
-  header { background: #16213e; padding: 12px 20px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid #0f3460; }
-  header h1 { font-size: 18px; color: #00b4d8; }
-  header .status { font-size: 12px; color: #4caf50; }
-  .container { display: flex; flex: 1; overflow: hidden; }
-  .sidebar { width: 320px; background: #16213e; border-right: 1px solid #0f3460; overflow-y: auto; }
-  .main { flex: 1; display: flex; flex-direction: column; }
-  .conv-item { padding: 12px 16px; cursor: pointer; border-bottom: 1px solid #0f3460; transition: background 0.2s; }
-  .conv-item:hover { background: #1a1a3e; }
-  .conv-item.active { background: #0f3460; }
-  .conv-item .name { font-weight: 600; font-size: 14px; margin-bottom: 4px; }
-  .conv-item .preview { font-size: 12px; color: #888; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .conv-item .time { font-size: 11px; color: #666; float: right; }
-  .conv-item .unread { background: #e74c3c; color: white; font-size: 10px; padding: 2px 6px; border-radius: 10px; float: right; margin-top: 4px; }
-  .messages { flex: 1; overflow-y: auto; padding: 16px; }
-  .msg { margin-bottom: 12px; max-width: 70%; }
-  .msg.inbound { margin-right: auto; }
-  .msg.outbound { margin-left: auto; }
-  .msg .bubble { padding: 10px 14px; border-radius: 12px; font-size: 14px; line-height: 1.4; }
-  .msg.inbound .bubble { background: #2d2d44; border-bottom-left-radius: 4px; }
-  .msg.outbound .bubble { background: #0f3460; border-bottom-right-radius: 4px; }
-  .msg .meta { font-size: 11px; color: #666; margin-top: 4px; }
-  .msg.inbound .meta { text-align: left; }
-  .msg.outbound .meta { text-align: right; }
-  .empty { display: flex; align-items: center; justify-content: center; flex: 1; color: #555; font-size: 16px; }
-  .draft-panel { background: #16213e; border-top: 1px solid #0f3460; padding: 12px 16px; }
-  .draft-panel .draft-text { background: #1a1a2e; border: 1px solid #0f3460; border-radius: 8px; padding: 10px; color: #e0e0e0; font-size: 14px; margin-bottom: 8px; min-height: 60px; }
-  .draft-panel .actions { display: flex; gap: 8px; }
-  .btn { padding: 8px 16px; border: none; border-radius: 6px; cursor: pointer; font-size: 13px; font-weight: 600; }
-  .btn-approve { background: #4caf50; color: white; }
-  .btn-edit { background: #ff9800; color: white; }
-  .btn-reject { background: #666; color: white; }
-  .btn:hover { opacity: 0.9; }
-  #loading { text-align: center; padding: 40px; color: #666; }
+  body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; background: #0d1117; color: #e0e0e0; height: 100vh; display: flex; flex-direction: column; }
+  header { background: #161b22; padding: 10px 16px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid #30363d; }
+  header h1 { font-size: 16px; color: #58a6ff; }
+  .header-actions { display: flex; gap: 8px; align-items: center; }
+  .status { font-size: 11px; padding: 3px 8px; border-radius: 10px; background: #238636; color: white; }
+  .tabs { display: flex; background: #161b22; border-bottom: 1px solid #30363d; }
+  .tab { padding: 10px 20px; cursor: pointer; font-size: 13px; color: #8b949e; border-bottom: 2px solid transparent; }
+  .tab.active { color: #58a6ff; border-bottom-color: #58a6ff; }
+  .tab:hover { color: #c9d1d9; }
+  .container { flex: 1; overflow: hidden; }
+
+  /* Zalo Control Panel */
+  .zalo-panel { padding: 16px; }
+  .section { margin-bottom: 20px; }
+  .section h3 { font-size: 14px; color: #8b949e; margin-bottom: 10px; }
+  .input-group { display: flex; gap: 8px; margin-bottom: 12px; }
+  .input-group input, .input-group textarea { flex: 1; background: #0d1117; border: 1px solid #30363d; border-radius: 6px; padding: 8px 12px; color: #e0e0e0; font-size: 13px; }
+  .input-group textarea { min-height: 60px; resize: vertical; }
+  .btn { padding: 8px 14px; border: none; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 600; }
+  .btn-blue { background: #1f6feb; color: white; }
+  .btn-green { background: #238636; color: white; }
+  .btn-gray { background: #30363d; color: #c9d1d9; }
+  .btn-red { background: #da3633; color: white; }
+  .btn:hover { opacity: 0.85; }
+
+  /* Conversations list */
+  .conv-list { max-height: 400px; overflow-y: auto; }
+  .conv-item { padding: 10px 12px; border: 1px solid #30363d; border-radius: 8px; margin-bottom: 6px; cursor: pointer; transition: background 0.2s; }
+  .conv-item:hover { background: #161b22; }
+  .conv-name { font-weight: 600; font-size: 13px; }
+  .conv-preview { font-size: 12px; color: #8b949e; margin-top: 2px; }
+  .conv-time { font-size: 11px; color: #484f58; float: right; }
+
+  /* Messages */
+  .msg-list { max-height: 300px; overflow-y: auto; padding: 12px; background: #0d1117; border: 1px solid #30363d; border-radius: 8px; }
+  .msg { margin-bottom: 8px; }
+  .msg .bubble { display: inline-block; padding: 8px 12px; border-radius: 10px; font-size: 13px; max-width: 80%; }
+  .msg.inbound .bubble { background: #1c2128; }
+  .msg.outbound .bubble { background: #1f6feb; margin-left: auto; display: block; text-align: right; }
+  .msg .meta { font-size: 10px; color: #484f58; margin-top: 2px; }
+
+  /* Screenshot */
+  .screenshot-container { text-align: center; }
+  .screenshot-container img { max-width: 100%; border-radius: 8px; border: 1px solid #30363d; margin-top: 10px; }
+
+  /* Log */
+  .log { background: #0d1117; border: 1px solid #30363d; border-radius: 6px; padding: 10px; font-family: monospace; font-size: 12px; max-height: 200px; overflow-y: auto; color: #8b949e; }
+  .log .entry { margin-bottom: 4px; }
+  .log .ok { color: #3fb950; }
+  .log .err { color: #f85149; }
 </style>
 </head>
 <body>
 <header>
   <h1>Haviz</h1>
-  <span class="status" id="status">Connecting...</span>
-</header>
-<div class="container">
-  <div class="sidebar" id="sidebar">
-    <div id="loading">Loading conversations...</div>
+  <div class="header-actions">
+    <span class="status" id="statusBadge">Connecting...</span>
+    <button class="btn btn-gray" onclick="takeScreenshot()">Screenshot</button>
   </div>
-  <div class="main">
-    <div class="messages" id="messages">
-      <div class="empty">Select a conversation</div>
+</header>
+<div class="tabs">
+  <div class="tab active" onclick="showTab('zalo')">Zalo Control</div>
+  <div class="tab" onclick="showTab('inbox')">Inbox</div>
+  <div class="tab" onclick="showTab('screenshot')">Screenshots</div>
+</div>
+<div class="container">
+  <!-- Zalo Control Tab -->
+  <div id="tab-zalo" class="zalo-panel">
+    <div class="section">
+      <h3>Danh sach hoi thoai</h3>
+      <button class="btn btn-blue" onclick="loadZaloConversations()">Refresh</button>
+      <div class="conv-list" id="zaloConvList" style="margin-top:10px"></div>
     </div>
-    <div class="draft-panel" id="draftPanel" style="display:none">
-      <div style="font-size:12px;color:#888;margin-bottom:6px">AI Draft</div>
-      <div class="draft-text" id="draftText" contenteditable="true"></div>
-      <div class="actions">
-        <button class="btn btn-approve" onclick="approveDraft()">Approve & Send</button>
-        <button class="btn btn-reject" onclick="rejectDraft()">Reject</button>
+
+    <div class="section">
+      <h3>Tim kiem user</h3>
+      <div class="input-group">
+        <input type="text" id="searchQuery" placeholder="Nhap ten can tim..." onkeydown="if(event.key==='Enter')searchUser()">
+        <button class="btn btn-blue" onclick="searchUser()">Tim</button>
       </div>
+      <div id="searchResults"></div>
+    </div>
+
+    <div class="section">
+      <h3>Gui tin nhan (conversation dang mo)</h3>
+      <div class="input-group">
+        <textarea id="messageText" placeholder="Nhap tin nhan..."></textarea>
+      </div>
+      <button class="btn btn-green" onclick="sendMessage()">Gui</button>
+    </div>
+
+    <div class="section">
+      <h3>Log</h3>
+      <div class="log" id="log"></div>
+    </div>
+  </div>
+
+  <!-- Inbox Tab -->
+  <div id="tab-inbox" class="zalo-panel" style="display:none">
+    <div class="section">
+      <h3>Agent Conversations (SQLite)</h3>
+      <button class="btn btn-blue" onclick="loadInbox()">Refresh</button>
+      <div class="conv-list" id="inboxList" style="margin-top:10px"></div>
+    </div>
+    <div class="section">
+      <h3>Messages</h3>
+      <div class="msg-list" id="inboxMessages">Select a conversation above</div>
+    </div>
+  </div>
+
+  <!-- Screenshot Tab -->
+  <div id="tab-screenshot" class="zalo-panel" style="display:none">
+    <div class="section">
+      <h3>Screenshot</h3>
+      <button class="btn btn-blue" onclick="takeScreenshot()">Capture</button>
+      <div class="screenshot-container" id="screenshotContainer"></div>
     </div>
   </div>
 </div>
 
 <script>
 const API = 'http://localhost:9999/api';
-let currentConvId = null;
-let currentDraftId = null;
 
-async function fetchJSON(url) {
-  const res = await fetch(url);
-  return res.json();
+function log(msg, type = 'ok') {
+  const el = document.getElementById('log');
+  const entry = document.createElement('div');
+  entry.className = 'entry ' + type;
+  entry.textContent = new Date().toLocaleTimeString() + ' ' + msg;
+  el.prepend(entry);
+  if (el.children.length > 50) el.removeChild(el.lastChild);
 }
 
-async function postJSON(url, body) {
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
+function showTab(name) {
+  document.querySelectorAll('.tabs .tab').forEach((t, i) => {
+    t.classList.toggle('active', t.textContent.toLowerCase().includes(name));
   });
-  return res.json();
+  document.querySelectorAll('[id^="tab-"]').forEach(t => t.style.display = 'none');
+  document.getElementById('tab-' + name).style.display = 'block';
 }
 
-async function loadConversations() {
+async function checkStatus() {
   try {
-    const data = await fetchJSON(`${API}/conversations`);
-    document.getElementById('status').textContent = 'Connected';
-    document.getElementById('status').style.color = '#4caf50';
+    const res = await fetch(API + '/status');
+    const data = await res.json();
+    document.getElementById('statusBadge').textContent = 'Agent v' + data.version;
+    document.getElementById('statusBadge').style.background = '#238636';
+  } catch {
+    document.getElementById('statusBadge').textContent = 'Offline';
+    document.getElementById('statusBadge').style.background = '#da3633';
+  }
+}
 
-    const sidebar = document.getElementById('sidebar');
-    if (!data.conversations || data.conversations.length === 0) {
-      sidebar.innerHTML = '<div id="loading">No conversations yet.<br>Open Zalo and start chatting!</div>';
-      return;
+async function loadZaloConversations() {
+  log('Loading Zalo conversations...');
+  try {
+    const res = await fetch(API + '/zalo/conversations');
+    const data = await res.json();
+    const list = document.getElementById('zaloConvList');
+
+    if (data.conversations && data.conversations.length > 0) {
+      list.innerHTML = data.conversations
+        .filter(c => c.name && c.name.trim())
+        .map((c, i) => `
+          <div class="conv-item" onclick="openConv(${i + 1})">
+            <div class="conv-name">
+              ${i + 1}. ${esc(c.name)}
+              <span class="conv-time">${esc(c.time || '')}</span>
+            </div>
+            <div class="conv-preview">${esc(c.sender ? c.sender + ': ' : '')}${esc(c.preview || '')}</div>
+          </div>
+        `).join('');
+      log(data.conversations.length + ' conversations loaded', 'ok');
+    } else {
+      list.innerHTML = '<div style="color:#8b949e;padding:10px">No conversations. Is Zalo Web logged in?</div>';
+      log('No conversations found', 'err');
     }
+  } catch (e) {
+    log('Error: ' + e.message, 'err');
+  }
+}
 
-    sidebar.innerHTML = data.conversations.map(c => `
-      <div class="conv-item ${c.id === currentConvId ? 'active' : ''}"
-           onclick="openConversation('${c.id}', '${escape(c.contact_name)}')">
-        <div class="name">
-          ${c.contact_name}
-          ${c.unread_count > 0 ? `<span class="unread">${c.unread_count}</span>` : ''}
-          <span class="time">${formatTime(c.last_message_at)}</span>
+async function searchUser() {
+  const query = document.getElementById('searchQuery').value.trim();
+  if (!query) return;
+  log('Searching: ' + query);
+  try {
+    const res = await fetch(API + '/zalo/search', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({query}),
+    });
+    const data = await res.json();
+    log('Search sent: ' + query, 'ok');
+
+    if (data.conversations) {
+      const el = document.getElementById('searchResults');
+      el.innerHTML = data.conversations
+        .filter(c => c.name && c.name.trim())
+        .map((c, i) => `
+          <div class="conv-item" onclick="openConv(${i + 1})">
+            <div class="conv-name">${i + 1}. ${esc(c.name)}</div>
+            <div class="conv-preview">${esc(c.preview || '')}</div>
+          </div>
+        `).join('');
+    }
+  } catch (e) {
+    log('Search error: ' + e.message, 'err');
+  }
+}
+
+async function openConv(index) {
+  log('Opening conversation #' + index);
+  try {
+    const res = await fetch(API + '/zalo/open', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({index}),
+    });
+    const data = await res.json();
+    log('Opened #' + index, 'ok');
+  } catch (e) {
+    log('Open error: ' + e.message, 'err');
+  }
+}
+
+async function sendMessage() {
+  const msg = document.getElementById('messageText').value.trim();
+  if (!msg) return;
+  log('Sending: ' + msg.substring(0, 50) + '...');
+  try {
+    const res = await fetch(API + '/zalo/send', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({message: msg}),
+    });
+    const data = await res.json();
+    log('Sent!', 'ok');
+    document.getElementById('messageText').value = '';
+  } catch (e) {
+    log('Send error: ' + e.message, 'err');
+  }
+}
+
+async function takeScreenshot() {
+  log('Taking screenshot...');
+  try {
+    const res = await fetch(API + '/screenshot');
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const container = document.getElementById('screenshotContainer');
+    container.innerHTML = '<img src="' + url + '">';
+    showTab('screenshot');
+    log('Screenshot captured', 'ok');
+  } catch (e) {
+    log('Screenshot error: ' + e.message, 'err');
+  }
+}
+
+async function loadInbox() {
+  try {
+    const res = await fetch(API + '/conversations');
+    const data = await res.json();
+    const list = document.getElementById('inboxList');
+    if (data.conversations && data.conversations.length > 0) {
+      list.innerHTML = data.conversations.map(c => `
+        <div class="conv-item" onclick="loadMessages('${c.id}')">
+          <div class="conv-name">${esc(c.contact_name)} <span class="conv-time">${formatTime(c.last_message_at)}</span></div>
+          <div class="conv-preview">${esc(c.last_message_preview || '')}</div>
         </div>
-        <div class="preview">${c.last_message_preview || ''}</div>
+      `).join('');
+    } else {
+      list.innerHTML = '<div style="color:#8b949e;padding:10px">No messages in Agent DB yet. Start polling first.</div>';
+    }
+  } catch (e) { log('Inbox error: ' + e.message, 'err'); }
+}
+
+async function loadMessages(convId) {
+  const res = await fetch(API + '/conversations/' + convId + '/messages?limit=30');
+  const data = await res.json();
+  const el = document.getElementById('inboxMessages');
+  if (data.messages && data.messages.length) {
+    el.innerHTML = data.messages.reverse().map(m => `
+      <div class="msg ${m.direction}">
+        <div class="bubble">${esc(m.content)}</div>
+        <div class="meta">${esc(m.sender_name)} ${m.zalo_timestamp || ''}</div>
       </div>
     `).join('');
-  } catch (e) {
-    document.getElementById('status').textContent = 'Disconnected';
-    document.getElementById('status').style.color = '#e74c3c';
+    el.scrollTop = el.scrollHeight;
   }
 }
 
-async function openConversation(id, name) {
-  currentConvId = id;
-  loadConversations(); // refresh to show active
-
-  const data = await fetchJSON(`${API}/conversations/${id}/messages?limit=50`);
-  const container = document.getElementById('messages');
-
-  if (!data.messages || data.messages.length === 0) {
-    container.innerHTML = '<div class="empty">No messages</div>';
-    return;
-  }
-
-  // Reverse to show oldest first
-  const msgs = data.messages.reverse();
-  container.innerHTML = msgs.map(m => `
-    <div class="msg ${m.direction}">
-      <div class="bubble">${escapeHtml(m.content)}</div>
-      <div class="meta">${m.sender_name} ${m.zalo_timestamp || ''}</div>
-    </div>
-  `).join('');
-
-  container.scrollTop = container.scrollHeight;
-
-  // Mark as read
-  postJSON(`${API}/conversations/${id}/read`, {});
-
-  // Check for pending drafts
-  loadDrafts();
-}
-
-async function loadDrafts() {
-  const data = await fetchJSON(`${API}/drafts`);
-  const panel = document.getElementById('draftPanel');
-
-  if (data.drafts && data.drafts.length > 0) {
-    const draft = data.drafts[0];
-    currentDraftId = draft.id;
-    document.getElementById('draftText').textContent = draft.content;
-    panel.style.display = 'block';
-  } else {
-    panel.style.display = 'none';
-  }
-}
-
-async function approveDraft() {
-  if (!currentDraftId) return;
-  const content = document.getElementById('draftText').textContent;
-  await postJSON(`${API}/drafts/${currentDraftId}/approve`, {
-    edited_content: content,
-  });
-  document.getElementById('draftPanel').style.display = 'none';
-  currentDraftId = null;
-}
-
-async function rejectDraft() {
-  if (!currentDraftId) return;
-  await postJSON(`${API}/drafts/${currentDraftId}/reject`, {});
-  document.getElementById('draftPanel').style.display = 'none';
-  currentDraftId = null;
-}
-
+function esc(s) { const d = document.createElement('div'); d.textContent = s || ''; return d.innerHTML; }
 function formatTime(iso) {
   if (!iso) return '';
   const d = new Date(iso);
-  const now = new Date();
-  const diff = (now - d) / 1000 / 60;
-  if (diff < 1) return 'now';
-  if (diff < 60) return Math.round(diff) + 'm';
-  if (diff < 1440) return Math.round(diff / 60) + 'h';
+  const mins = Math.round((Date.now() - d) / 60000);
+  if (mins < 1) return 'now';
+  if (mins < 60) return mins + 'm';
+  if (mins < 1440) return Math.round(mins/60) + 'h';
   return d.toLocaleDateString('vi');
 }
 
-function escapeHtml(text) {
-  const d = document.createElement('div');
-  d.textContent = text;
-  return d.innerHTML;
-}
-
-function escape(str) {
-  return str.replace(/'/g, "\\'");
-}
-
-// Poll conversations every 5s
-loadConversations();
-setInterval(loadConversations, 5000);
+// Init
+checkStatus();
+setInterval(checkStatus, 10000);
+loadZaloConversations();
 </script>
 </body>
 </html>
