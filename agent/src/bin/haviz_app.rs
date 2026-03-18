@@ -180,6 +180,7 @@ async fn start_agent() {
         .route("/api/zalo/search", axum::routing::post(zalo_search_handler))
         .route("/api/zalo/open", axum::routing::post(zalo_open_handler))
         .route("/api/zalo/send", axum::routing::post(zalo_send_handler))
+        .route("/api/zalo/search-and-send", axum::routing::post(zalo_search_and_send_handler))
         .route("/api/zalo/conversations", axum::routing::get(zalo_conversations_handler));
 
     let addr = format!("0.0.0.0:{}", config.http_port);
@@ -379,86 +380,221 @@ async fn zalo_send_handler(
 ) -> axum::response::Json<serde_json::Value> {
     let message = req.message.replace('\\', "\\\\").replace('"', "\\\"");
 
-    // Step 1: Click on chat input to focus it
-    let _ = eval_zalo_js(r#"(function(){
-        var el=document.querySelector('[contenteditable="true"]');
-        if(!el)return 'not_found';
-        el.focus();
-        el.click();
-        // Also dispatch mouse events for React
-        var rect=el.getBoundingClientRect();
-        var opts={bubbles:true,clientX:rect.x+10,clientY:rect.y+10};
-        el.dispatchEvent(new MouseEvent('mousedown',opts));
-        el.dispatchEvent(new MouseEvent('mouseup',opts));
-        el.dispatchEvent(new MouseEvent('click',opts));
-        return 'focused';
-    })();"#);
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    // Run entire send flow in spawn_blocking to avoid blocking tokio runtime
+    let msg = message.clone();
+    tokio::task::spawn_blocking(move || {
+        // Step 1: Click chat input with REAL OS mouse click via AppleScript
+        // JS focus() doesn't move OS cursor — need AppleScript click at coordinates
+        // Chat input is at bottom of Zalo sidebar (right side of Haviz window)
+        let _ = run_osascript(
+            "tell application \"System Events\" to click at {1, 1}"
+        ); // dummy click to test permission
 
-    // Step 2: Type text character by character using InputEvent
-    // Same nativeInputValueSetter trick won't work for contenteditable.
-    // For contenteditable, dispatch beforeinput + input events per character.
-    let js_type = format!(
-        r#"(function(){{
-            var el=document.querySelector('[contenteditable="true"]');
-            if(!el)return 'not_found';
-            el.focus();
+        // Get window position, then click bottom of Zalo sidebar
+        let pos_result = run_osascript(
+            "tell application \"System Events\" to tell process \"haviz_app\" to return {position of window 1, size of window 1}"
+        );
 
-            // Clear existing content
-            el.innerHTML='';
-            el.dispatchEvent(new InputEvent('input',{{bubbles:true,inputType:'deleteContentBackward'}}));
-
-            // Type text char by char
-            var text="{}";
-            for(var i=0;i<text.length;i++){{
-                var ch=text[i];
-                el.dispatchEvent(new InputEvent('beforeinput',{{bubbles:true,cancelable:true,inputType:'insertText',data:ch}}));
-                el.innerHTML+=ch;
-                el.dispatchEvent(new InputEvent('input',{{bubbles:true,inputType:'insertText',data:ch}}));
-            }}
-            return 'typed:'+text.length;
-        }})();"#,
-        message
-    );
-    let _ = eval_zalo_js(&js_type);
-    std::thread::sleep(std::time::Duration::from_millis(500));
-
-    // Step 3: Send — try multiple methods
-    let _ = eval_zalo_js(r#"(function(){
-        var el=document.querySelector('[contenteditable="true"]');
-        if(!el)return;
-
-        // Method 1: Enter key with all event types
-        ['keydown','keypress','keyup'].forEach(function(type){
-            el.dispatchEvent(new KeyboardEvent(type,{
-                key:'Enter',code:'Enter',keyCode:13,which:13,
-                bubbles:true,cancelable:true
-            }));
-        });
-
-        // Method 2: Find and click send button (Zalo has an icon button)
-        var allEls=document.querySelectorAll('[class*="send"],[class*="Send"],button,[role="button"]');
-        for(var i=0;i<allEls.length;i++){
-            var b=allEls[i];
-            var rect=b.getBoundingClientRect();
-            // Send button is usually small (icon), near bottom-right of chat
-            if(rect.width>10 && rect.width<80 && rect.height>10 && rect.height<80
-               && rect.bottom>window.innerHeight-100){
-                b.click();
-                b.dispatchEvent(new MouseEvent('click',{bubbles:true}));
-                return 'clicked_btn';
+        match pos_result {
+            Ok(pos_str) => {
+                // Parse: {{x, y}, {w, h}}
+                let nums: Vec<f64> = pos_str.replace('{', "").replace('}', "")
+                    .split(',')
+                    .filter_map(|s| s.trim().parse().ok())
+                    .collect();
+                if nums.len() >= 4 {
+                    let (wx, wy, ww, wh) = (nums[0], nums[1], nums[2], nums[3]);
+                    // Chat input = bottom of Zalo sidebar (right 400px, bottom ~50px)
+                    let click_x = (wx + ww - 200.0) as i64;
+                    let click_y = (wy + wh - 60.0) as i64;
+                    let _ = run_osascript(&format!(
+                        "tell application \"System Events\" to click at {{{}, {}}}", click_x, click_y
+                    ));
+                }
+            }
+            Err(_) => {
+                // Fallback: JS focus only (might not work)
+                eval_zalo_js(r#"(function(){
+                    var el=document.querySelector('[contenteditable="true"]');
+                    if(el){el.focus();el.click();}
+                })();"#).ok();
             }
         }
 
-        // Method 3: Submit form if exists
-        var form=el.closest('form');
-        if(form){form.submit();return 'form_submit';}
+        std::thread::sleep(std::time::Duration::from_millis(500));
 
-        return 'enter_only';
-    })();"#);
+        // Step 2: Clear + type char by char
+        let js_type = format!(
+            r#"(function(){{
+                var el=document.querySelector('[contenteditable="true"]');
+                if(!el)return;
+                el.focus();
+                el.innerHTML='';
+                el.dispatchEvent(new InputEvent('input',{{bubbles:true,inputType:'deleteContentBackward'}}));
+                var msg="{}";
+                for(var i=0;i<msg.length;i++){{
+                    var ch=msg[i];
+                    el.dispatchEvent(new InputEvent('beforeinput',{{bubbles:true,cancelable:true,inputType:'insertText',data:ch}}));
+                    el.innerHTML+=ch;
+                    el.dispatchEvent(new InputEvent('input',{{bubbles:true,inputType:'insertText',data:ch}}));
+                }}
+            }})();"#,
+            msg
+        );
+        eval_zalo_js(&js_type).ok();
+
+        std::thread::sleep(std::time::Duration::from_millis(500));
+
+        // Step 3: Enter + send button
+        eval_zalo_js(r#"(function(){
+            var el=document.querySelector('[contenteditable="true"]');
+            if(!el)return;
+            el.focus();
+            ['keydown','keypress','keyup'].forEach(function(type){
+                el.dispatchEvent(new KeyboardEvent(type,{
+                    key:'Enter',code:'Enter',keyCode:13,which:13,
+                    bubbles:true,cancelable:true
+                }));
+            });
+            var btns=document.querySelectorAll('[class*="send"],[class*="Send"],button,[role="button"]');
+            for(var i=0;i<btns.length;i++){
+                var b=btns[i];
+                var r=b.getBoundingClientRect();
+                if(r.width>10&&r.width<80&&r.height>10&&r.height<80&&r.bottom>window.innerHeight-100){
+                    b.click();
+                    break;
+                }
+            }
+        })();"#).ok();
+    }).await.ok();
 
     axum::response::Json(serde_json::json!({
         "ok": true,
+        "message": req.message,
+    }))
+}
+
+#[derive(serde::Deserialize)]
+struct SearchAndSendRequest {
+    to: String,
+    message: String,
+}
+
+async fn zalo_search_and_send_handler(
+    axum::extract::Json(req): axum::extract::Json<SearchAndSendRequest>,
+) -> axum::response::Json<serde_json::Value> {
+    let to = req.to.replace('\\', "\\\\").replace('"', "\\\"").replace('\'', "\\'");
+    let message = req.message.replace('\\', "\\\\").replace('"', "\\\"");
+
+    // Full flow in one spawn_blocking:
+    // 1. Search contact (types into search input — this WORKS)
+    // 2. Wait for results
+    // 3. Enter to open conversation (cursor goes to chat input)
+    // 4. Type message (using same InputEvent approach as search)
+    // 5. Enter to send
+
+    let result = tokio::task::spawn_blocking(move || {
+        // Step 1: Clear search + type contact name (proven approach)
+        let js_clear = r#"(function(){
+            var inp=document.querySelector('input[type="text"]');
+            if(!inp)inp=document.querySelector('input');
+            if(!inp)return;
+            inp.focus();
+            var setter=Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,'value').set;
+            setter.call(inp,'');
+            inp.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'deleteContentBackward'}));
+        })();"#;
+        eval_zalo_js(js_clear).ok();
+        std::thread::sleep(std::time::Duration::from_millis(300));
+
+        // Step 2: Type contact name char by char
+        let js_search = format!(
+            r#"(function(){{
+                var inp=document.querySelector('input[type="text"]');
+                if(!inp)inp=document.querySelector('input');
+                if(!inp)return;
+                inp.focus();
+                var setter=Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,'value').set;
+                var text='{}';
+                for(var i=0;i<text.length;i++){{
+                    var ch=text[i];
+                    inp.dispatchEvent(new KeyboardEvent('keydown',{{key:ch,bubbles:true}}));
+                    setter.call(inp,text.substring(0,i+1));
+                    inp.dispatchEvent(new InputEvent('input',{{bubbles:true,data:ch,inputType:'insertText'}}));
+                    inp.dispatchEvent(new KeyboardEvent('keyup',{{key:ch,bubbles:true}}));
+                }}
+            }})();"#,
+            to
+        );
+        eval_zalo_js(&js_search).ok();
+
+        // Step 3: Wait for search results
+        std::thread::sleep(std::time::Duration::from_millis(2500));
+
+        // Step 4: Enter to open first result (cursor moves to chat input)
+        let js_enter_search = r#"(function(){
+            var inp=document.querySelector('input[type="text"]');
+            if(!inp)inp=document.querySelector('input');
+            if(!inp)return;
+            inp.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true}));
+            inp.dispatchEvent(new KeyboardEvent('keypress',{key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true}));
+            inp.dispatchEvent(new KeyboardEvent('keyup',{key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true}));
+        })();"#;
+        eval_zalo_js(js_enter_search).ok();
+
+        // Step 5: Wait for conversation to open (chat input gets focus)
+        std::thread::sleep(std::time::Duration::from_millis(1500));
+
+        // Step 6: Type message into contenteditable chat input
+        // After Enter from search, the contenteditable should have focus in the WebView context
+        let js_type_msg = format!(
+            r#"(function(){{
+                var el=document.querySelector('[contenteditable="true"]');
+                if(!el)return 'no_input';
+                el.focus();
+                el.innerHTML='';
+                el.dispatchEvent(new InputEvent('input',{{bubbles:true,inputType:'deleteContentBackward'}}));
+                var msg="{}";
+                for(var i=0;i<msg.length;i++){{
+                    var ch=msg[i];
+                    el.dispatchEvent(new InputEvent('beforeinput',{{bubbles:true,cancelable:true,inputType:'insertText',data:ch}}));
+                    el.innerHTML+=ch;
+                    el.dispatchEvent(new InputEvent('input',{{bubbles:true,inputType:'insertText',data:ch}}));
+                }}
+                return 'typed';
+            }})();"#,
+            message
+        );
+        eval_zalo_js(&js_type_msg).ok();
+        std::thread::sleep(std::time::Duration::from_millis(500));
+
+        // Step 7: Enter to send + click send button
+        eval_zalo_js(r#"(function(){
+            var el=document.querySelector('[contenteditable="true"]');
+            if(!el)return;
+            ['keydown','keypress','keyup'].forEach(function(type){
+                el.dispatchEvent(new KeyboardEvent(type,{
+                    key:'Enter',code:'Enter',keyCode:13,which:13,
+                    bubbles:true,cancelable:true
+                }));
+            });
+            // Click send button
+            var btns=document.querySelectorAll('[class*="send"],[class*="Send"],button,[role="button"]');
+            for(var i=0;i<btns.length;i++){
+                var b=btns[i];
+                var r=b.getBoundingClientRect();
+                if(r.width>10&&r.width<80&&r.height>10&&r.height<80&&r.bottom>window.innerHeight-100){
+                    b.click();break;
+                }
+            }
+        })();"#).ok();
+
+        Ok("sent".to_string())
+    }).await.unwrap_or(Err("failed".to_string()));
+
+    axum::response::Json(serde_json::json!({
+        "ok": result.is_ok(),
+        "to": req.to,
         "message": req.message,
     }))
 }

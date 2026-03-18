@@ -32,10 +32,15 @@
 
   async function sendMessage() {
     if (!messageText.trim() || sending) return;
+    if (!searchQuery.trim()) {
+      addLog('Nhập tên người nhận trong Search trước', 'err');
+      return;
+    }
     sending = true;
-    addLog(`Sending: ${messageText.slice(0, 40)}...`);
+    addLog(`Sending to ${searchQuery}: ${messageText.slice(0, 40)}...`);
     try {
-      await api.zalo.send(messageText);
+      // Full flow: search → open conversation → type → send
+      await api.zalo.searchAndSend(searchQuery, messageText);
       addLog('Sent!');
       messageText = '';
     } catch (e) {
@@ -86,7 +91,7 @@
 
   <!-- Send Message -->
   <div>
-    <h3 class="text-xs font-semibold text-[var(--text-secondary)] mb-2 uppercase tracking-wide">Send Message (current conversation)</h3>
+    <h3 class="text-xs font-semibold text-[var(--text-secondary)] mb-2 uppercase tracking-wide">Send Message (Search user above first)</h3>
     <textarea
       bind:value={messageText}
       placeholder="Nhập tin nhắn... (Enter để gửi)"

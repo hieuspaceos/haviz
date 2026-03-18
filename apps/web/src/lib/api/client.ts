@@ -38,6 +38,7 @@ export const api = {
     search: (query: string) => post<{ ok: boolean; conversations?: ZaloConv[] }>('/zalo/search', { query }),
     open: (index: number) => post('/zalo/open', { index }),
     send: (message: string) => post('/zalo/send', { message }),
+    searchAndSend: (to: string, message: string) => post('/zalo/search-and-send', { to, message }),
   },
 
   screenshot: () => fetch(`${API_BASE}/screenshot`).then(r => r.blob()),
