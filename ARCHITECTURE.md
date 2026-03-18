@@ -232,14 +232,34 @@ BullMQ message:ingest worker:
   5. Enqueue → ai:draft queue
   6. Broadcast → WebSocket → all org users
 
-STEP 4: AI DRAFT
-─────────────────
-BullMQ ai:draft worker:
-  1. Load 20 tin nhắn gần nhất + templates
-  2. Call Groq API (Llama 4 Scout):
-     System: "Trợ lý bán hàng tiếng Việt, thân thiện..."
-  3. Insert AiDraft (status: pending)
-  4. Broadcast → WebSocket: "ai:draft:ready"
+STEP 4: AI DRAFT (Smart Pipeline)
+───────────────────────────────────
+4a. Template matching (không tốn AI cost):
+  - So sánh tin nhắn inbound với templates có sẵn
+  - Nếu match → dùng template luôn, KHÔNG gọi AI
+  - Ví dụ: "giá bao nhiêu" → template báo giá
+  - Tiết kiệm ~50% số lần gọi AI
+
+4b. Nếu không match template → gọi AI:
+  BullMQ ai:draft worker:
+  1. Load style profile (cached, ~50 tokens)
+     - Phân tích 1 lần từ 50+ tin nhắn outbound cũ
+     - Cache trong DB: xưng hô, emoji, viết tắt, giọng điệu
+     - Không cần phân tích lại mỗi lần
+  2. Load smart context (~200 tokens thay vì ~800):
+     - 3-5 tin nhắn gần nhất (đủ hiểu ngữ cảnh)
+     - Contact metadata (1 dòng: quan hệ, lịch sử)
+     - Org context (sản phẩm, dịch vụ)
+  3. Call Groq API (Llama 4 Scout):
+     System prompt = style profile + org context
+     Messages = smart context window
+  4. Insert AiDraft (status: pending)
+  5. Broadcast → WebSocket: "ai:draft:ready"
+
+Chi phí ước tính:
+  - Trước tối ưu: ~800 tokens/request → $5/tháng (10 sales)
+  - Sau tối ưu:  ~200 tokens/request + 50% template match → $0.5/tháng
+  - 50 sales team: ~$2.5/tháng cho AI
 
 STEP 5: HIỂN THỊ (Web App)
 ───────────────────────────
@@ -300,8 +320,17 @@ ai_drafts        (id, conversation_id, message_id, content, model, confidence,
                   status, approved_by, edited_content)
                  -- status: pending | approved | rejected | edited
 
--- Templates
-templates        (id, org_id, name, content, category, variables, usage_count)
+-- Style Profile (cached, phân tích 1 lần)
+style_profiles   (id, user_id, org_id, profile_json, sample_count, last_analyzed_at)
+                 -- profile_json: { xung_ho, viet_tat[], emoji_style[],
+                 --   do_dai, giong_dieu, dac_diem[], vi_du_cau[] }
+                 -- Phân tích lại khi sample_count tăng thêm 50+
+
+-- Templates (có thêm match patterns cho auto-match)
+templates        (id, org_id, name, content, category, variables, usage_count,
+                  match_patterns, auto_match)
+                 -- match_patterns: ["giá bao nhiêu", "báo giá", "price"]
+                 -- auto_match: true → tự match không cần gọi AI
 
 -- Phase 2
 voice_reports    (id, org_id, user_id, audio_url, transcript, extracted_data)
@@ -396,7 +425,88 @@ analytics_events (id, org_id, event_type, conversation_id, properties)
 
 ---
 
-## 8. Tech Stack Summary
+## 8. AI Pipeline
+
+### 8.1 Smart Draft Flow
+
+```
+Tin nhắn inbound đến
+        │
+        ▼
+┌─ Template Match? ──────────────────────────┐
+│  So sánh với match_patterns trong templates │
+│  "giá bao nhiêu" → match template báo giá  │
+└────┬──────────────────┬────────────────────┘
+     │ Match            │ Không match
+     ▼                  ▼
+  Dùng template     Gọi Groq AI
+  (0 tokens,        (200 tokens,
+   0 cost)           ~$0.00003)
+     │                  │
+     ▼                  ▼
+  AiDraft           AiDraft
+  (pending)         (pending)
+     │                  │
+     └────────┬─────────┘
+              ▼
+     User: Approve / Edit / Reject
+```
+
+### 8.2 Style Profile (cache, phân tích 1 lần)
+
+```
+Lần đầu (khi user kết nối):
+  50+ tin nhắn outbound cũ
+        │
+        ▼
+  Groq AI phân tích → JSON style profile:
+  {
+    "xung_ho": "anh/em",
+    "viet_tat": ["e", "kk", "dc", "cty"],
+    "emoji_style": [":v", "=))))"],
+    "do_dai": "ngắn",
+    "giong_dieu": "thân mật, hài hước",
+    "dac_diem": ["hay đùa", "trêu đồng nghiệp"],
+    "vi_du_cau": ["chắc nhậu ít quá nên bị =))))"]
+  }
+        │
+        ▼
+  Lưu DB (style_profiles table)
+  Tự phân tích lại khi +50 tin nhắn mới
+
+Các lần sau:
+  Load style profile từ DB (~50 tokens)
+  Inject vào system prompt
+  → AI reply đúng style user
+```
+
+### 8.3 Smart Context Window
+
+```
+Thay vì gửi 20 tin nhắn (~800 tokens):
+
+System prompt (~100 tokens):
+  - Style profile (cached)
+  - Org context (1 dòng)
+
+Messages (~100 tokens):
+  - 3-5 tin nhắn gần nhất
+  - Contact metadata (1 dòng: "khách mới, hỏi giá tour")
+
+Tổng: ~200 tokens/request (giảm 75%)
+```
+
+### 8.4 Chi phí ước tính
+
+| Quy mô | Không tối ưu | Có tối ưu | Tiết kiệm |
+|---|---|---|---|
+| 1 sales | $0.5/tháng | $0.05/tháng | 90% |
+| 10 sales | $5/tháng | $0.5/tháng | 90% |
+| 50 sales | $25/tháng | $2.5/tháng | 90% |
+
+---
+
+## 9. Tech Stack Summary
 
 | Layer | Technology |
 |---|---|
