@@ -377,26 +377,85 @@ async fn zalo_open_handler(
 async fn zalo_send_handler(
     axum::extract::Json(req): axum::extract::Json<SendMsgRequest>,
 ) -> axum::response::Json<serde_json::Value> {
-    let message = req.message.replace('\\', "\\\\").replace('"', "\\\"").replace('\n', "\\n");
+    let message = req.message.replace('\\', "\\\\").replace('"', "\\\"");
 
-    // Pure JS: find chat input, set content, dispatch Enter
-    let js = format!(
+    // Step 1: Click on chat input to focus it
+    let _ = eval_zalo_js(r#"(function(){
+        var el=document.querySelector('[contenteditable="true"]');
+        if(!el)return 'not_found';
+        el.focus();
+        el.click();
+        // Also dispatch mouse events for React
+        var rect=el.getBoundingClientRect();
+        var opts={bubbles:true,clientX:rect.x+10,clientY:rect.y+10};
+        el.dispatchEvent(new MouseEvent('mousedown',opts));
+        el.dispatchEvent(new MouseEvent('mouseup',opts));
+        el.dispatchEvent(new MouseEvent('click',opts));
+        return 'focused';
+    })();"#);
+    std::thread::sleep(std::time::Duration::from_millis(500));
+
+    // Step 2: Type text character by character using InputEvent
+    // Same nativeInputValueSetter trick won't work for contenteditable.
+    // For contenteditable, dispatch beforeinput + input events per character.
+    let js_type = format!(
         r#"(function(){{
             var el=document.querySelector('[contenteditable="true"]');
-            if(!el)el=document.querySelector('textarea');
-            if(!el)return 'input_not_found';
+            if(!el)return 'not_found';
             el.focus();
-            el.textContent="{}";
-            el.innerHTML="{}";
-            el.dispatchEvent(new Event('input',{{bubbles:true}}));
-            el.dispatchEvent(new KeyboardEvent('keydown',{{key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true}}));
-            el.dispatchEvent(new KeyboardEvent('keypress',{{key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true}}));
-            el.dispatchEvent(new KeyboardEvent('keyup',{{key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true}}));
-            return 'sent';
+
+            // Clear existing content
+            el.innerHTML='';
+            el.dispatchEvent(new InputEvent('input',{{bubbles:true,inputType:'deleteContentBackward'}}));
+
+            // Type text char by char
+            var text="{}";
+            for(var i=0;i<text.length;i++){{
+                var ch=text[i];
+                el.dispatchEvent(new InputEvent('beforeinput',{{bubbles:true,cancelable:true,inputType:'insertText',data:ch}}));
+                el.innerHTML+=ch;
+                el.dispatchEvent(new InputEvent('input',{{bubbles:true,inputType:'insertText',data:ch}}));
+            }}
+            return 'typed:'+text.length;
         }})();"#,
-        message, message
+        message
     );
-    let _ = eval_zalo_js(&js);
+    let _ = eval_zalo_js(&js_type);
+    std::thread::sleep(std::time::Duration::from_millis(500));
+
+    // Step 3: Send — try multiple methods
+    let _ = eval_zalo_js(r#"(function(){
+        var el=document.querySelector('[contenteditable="true"]');
+        if(!el)return;
+
+        // Method 1: Enter key with all event types
+        ['keydown','keypress','keyup'].forEach(function(type){
+            el.dispatchEvent(new KeyboardEvent(type,{
+                key:'Enter',code:'Enter',keyCode:13,which:13,
+                bubbles:true,cancelable:true
+            }));
+        });
+
+        // Method 2: Find and click send button (Zalo has an icon button)
+        var allEls=document.querySelectorAll('[class*="send"],[class*="Send"],button,[role="button"]');
+        for(var i=0;i<allEls.length;i++){
+            var b=allEls[i];
+            var rect=b.getBoundingClientRect();
+            // Send button is usually small (icon), near bottom-right of chat
+            if(rect.width>10 && rect.width<80 && rect.height>10 && rect.height<80
+               && rect.bottom>window.innerHeight-100){
+                b.click();
+                b.dispatchEvent(new MouseEvent('click',{bubbles:true}));
+                return 'clicked_btn';
+            }
+        }
+
+        // Method 3: Submit form if exists
+        var form=el.closest('form');
+        if(form){form.submit();return 'form_submit';}
+
+        return 'enter_only';
+    })();"#);
 
     axum::response::Json(serde_json::json!({
         "ok": true,
