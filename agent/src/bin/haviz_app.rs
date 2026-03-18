@@ -258,30 +258,67 @@ async fn zalo_search_handler(
     axum::extract::Json(req): axum::extract::Json<SearchRequest>,
 ) -> axum::response::Json<serde_json::Value> {
     let query = req.query.clone();
+    let auto_enter = !req.query.is_empty(); // auto-open first result
 
-    // Pure JS injection — no AppleScript needed for search
-    let js = format!(
+    // Step 1: Focus input, clear, set value
+    let js_type = format!(
         r#"(function(){{
             var inp=document.querySelector('input[type="text"]');
             if(!inp)inp=document.querySelector('input');
             if(!inp)return;
             inp.focus();
-            inp.value="{}";
+            inp.value='';
             inp.dispatchEvent(new Event('input',{{bubbles:true}}));
-            inp.dispatchEvent(new Event('change',{{bubbles:true}}));
-            inp.dispatchEvent(new Event('keyup',{{bubbles:true}}));
-        }})();"#,
-        query.replace('\\', "\\\\").replace('"', "\\\"")
+        }})();"#
     );
-    let _ = eval_zalo_js(&js);
+    let _ = eval_zalo_js(&js_type);
+    std::thread::sleep(std::time::Duration::from_millis(200));
 
-    // Wait for results
+    // Step 2: Type each character + space trick (triggers Zalo's search)
+    let js_set = format!(
+        r#"(function(){{
+            var inp=document.querySelector('input[type="text"]');
+            if(!inp)inp=document.querySelector('input');
+            if(!inp)return;
+            inp.focus();
+            var text='{}';
+            // Simulate typing character by character
+            for(var i=0;i<text.length;i++){{
+                inp.value=text.substring(0,i+1);
+                inp.dispatchEvent(new Event('input',{{bubbles:true}}));
+            }}
+            // Add space then remove it (triggers search in Zalo)
+            inp.value=text+' ';
+            inp.dispatchEvent(new Event('input',{{bubbles:true}}));
+            setTimeout(function(){{
+                inp.value=text;
+                inp.dispatchEvent(new Event('input',{{bubbles:true}}));
+            }},100);
+        }})();"#,
+        query.replace('\\', "\\\\").replace('"', "\\\"").replace('\'', "\\'")
+    );
+    let _ = eval_zalo_js(&js_set);
+
+    // Step 3: Wait for search results to appear
     std::thread::sleep(std::time::Duration::from_secs(2));
+
+    // Step 4: Press Enter to open first result
+    if auto_enter {
+        let js_enter = r#"(function(){
+            var inp=document.querySelector('input[type="text"]');
+            if(!inp)inp=document.querySelector('input');
+            if(!inp)return;
+            inp.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true}));
+            inp.dispatchEvent(new KeyboardEvent('keypress',{key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true}));
+            inp.dispatchEvent(new KeyboardEvent('keyup',{key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true}));
+        })();"#;
+        let _ = eval_zalo_js(js_enter);
+    }
 
     axum::response::Json(serde_json::json!({
         "ok": true,
         "query": req.query,
-        "note": "Search typed via JS injection.",
+        "auto_enter": auto_enter,
     }))
 }
 
