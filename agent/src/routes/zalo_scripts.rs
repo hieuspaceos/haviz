@@ -91,14 +91,10 @@ pub const JS_EXTRACT_MESSAGES: &str = r#"(function(){
         if(truncates.length>3)score*=0.01;
         if(score>bestScore){bestScore=score;chatBox=div;}
     }
-    // If no scrollable container found, bail out
-    if(!chatBox){
-        if(window.ipc&&window.ipc.postMessage){
-            window.ipc.postMessage(JSON.stringify([]));
-        }
-        return;
-    }
-    var all=chatBox.querySelectorAll('*');
+    // Use scoped container if found, otherwise fallback to full document
+    // (Mac WebKit may not have transform-gpu class)
+    var scanRoot=chatBox||document;
+    var all=scanRoot.querySelectorAll('*');
     for(var i=0;i<all.length;i++){
         var el=all[i];
         if(el.children.length>0)continue;
