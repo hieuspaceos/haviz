@@ -141,9 +141,10 @@ See [Agent & Data Flow Details](./architecture/agent-dataflow.md)
 **Features:**
 - Collapsible left sidebar (navigation)
 - Message auto-load after conversation open (4s delay) or search match (2s)
-- Real-time message updates via polling
+- Real-time message updates via SQLite accumulation (3s polling → DB)
+- `/api/zalo/messages` — DB-first with live snapshot fallback
+- `/api/zalo/history` — paginated accumulated history
 - Multi-account switcher
-- Virtual scrolling (1000+ messages)
 - Draft editing & approval with edit/reject/regenerate buttons
 - Polished dark theme with glow effects
 - Responsive mobile view

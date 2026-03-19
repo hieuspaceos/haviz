@@ -48,7 +48,7 @@ Haviz is a revenue intelligence platform transforming Vietnamese sales conversat
 
 ### 1.1 Desktop Agent Finalization
 
-**Current Status:** 85% complete
+**Current Status:** 90% complete
 **LOC:** ~2,300
 
 | Component | Status | Latest Improvements |
@@ -88,7 +88,7 @@ haviz-agent-1.0.0/
 
 ### 1.2 Web UI Implementation
 
-**Current Status:** 85% complete
+**Current Status:** 90% complete
 **LOC:** ~650
 
 | Component | Status | Latest Improvements |

@@ -106,11 +106,13 @@ haviz/
 ## Key Features (Phase 1)
 
 ### Message Reading & Extraction
-- **Zalo Desktop** — via macOS Accessibility API (AX)
-- **Zalo Web** — via chrome-headless-shell + Chrome DevTools Protocol (CDP)
-- **Extraction** — Scoped to chat container with fallback to full document scan (cross-platform)
-- **Limit** — Up to 50 messages extracted per session
+- **Zalo Desktop** — via macOS Accessibility API (AX), Windows UI Automation (limited)
+- **Zalo Web** — embedded WebView sidebar (chat.zalo.me) with auto-activate
+- **Extraction** — Scoped to chat container (transform-gpu) + innerText fallback (cross-platform)
+- **Accumulation** — Messages stored in SQLite via 3s polling, growing history over time
+- **Limit** — Up to 100 messages per extraction, unlimited via DB accumulation
 - **Polling interval** — 3 seconds (near real-time)
+- **API endpoints** — `/api/zalo/messages` (DB-first), `/api/zalo/history` (paginated)
 
 ### AI Reply Drafts & Auto-Load
 - **Template matching first** (0 cost)

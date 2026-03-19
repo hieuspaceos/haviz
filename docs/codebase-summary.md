@@ -44,8 +44,12 @@ Located: `agent/`
 | `src/ai.rs` | Groq API integration for AI draft generation |
 | `src/channels/zalo_web.rs` | Zalo Web via chrome-headless-shell + Chrome DevTools Protocol |
 | `src/routes/zalo_control.rs` | IPC routes: auto-dismiss warning, auto-load messages, scoped message extraction |
+| `src/routes/zalo_accumulator.rs` | WebView poll → parse → dedup → SQLite upsert (background every 3s) |
+| `src/routes/zalo_db_handlers.rs` | DB-backed /messages (accumulation) + /history (paginated) endpoints |
+| `src/routes/zalo_scripts.rs` | Inline JS snippets for Zalo WebView (extract, scroll, activate, search) |
 | `src/app/webview.rs` | WebView initialization, persistent session data directory |
 | `src/app/ipc.rs` | IPC (Inter-Process Communication) between Rust agent and WebView |
+| `src/platform/windows/input.rs` | Windows SendInput + clipboard read/write for Zalo Desktop |
 | `src/channels/traits.rs` | ChannelReader + ChannelSender abstractions |
 | `src/message_parser.rs` | Parse raw AX text into structured messages (cross-platform fallback) |
 | `src/main.rs` | CLI entry point, starts axum server |
