@@ -28,6 +28,19 @@ fn parse_ipc_messages(raw: &serde_json::Value) -> Vec<ParsedMessage> {
     parse_array(arr)
 }
 
+/// System/UI messages that should never be stored in DB.
+const SKIP_MESSAGES: &[&str] = &[
+    "Kích hoạt", "Activate", "Tải ngay", "Đồng bộ ngay",
+    "Nhấn kích hoạt để sử dụng trên Tab này",
+    "Bạn đang mở Zalo trên một Tab khác hoặc không sử dụng Zalo quá lâu",
+    "Đồng bộ tin nhắn gần đây", "Nhấn để đồng bộ ngay",
+    "Zalo Web của bạn hiện chưa có đầy đủ tin nhắn gần đây",
+    "Chưa có tin nhắn", "Đang kết nối", "Đang tải",
+    "Tin nhắn", "Danh bạ", "Zalo Cloud", "My Documents",
+    "Công cụ", "Cài đặt", "Tìm kiếm", "Tất cả", "Chưa đọc", "Phân loại",
+    "Gửi nhanh", "Gọi lại",
+];
+
 fn parse_array(arr: &[serde_json::Value]) -> Vec<ParsedMessage> {
     let mut out = Vec::new();
     for item in arr {
@@ -35,6 +48,10 @@ fn parse_array(arr: &[serde_json::Value]) -> Vec<ParsedMessage> {
             Some(c) if c.len() >= 2 => c.to_string(),
             _ => continue,
         };
+        // Skip system/UI messages
+        if SKIP_MESSAGES.iter().any(|&s| content == s) {
+            continue;
+        }
         // Sender from JS is usually empty ("") — use empty string, direction = inbound
         let sender = item
             .get("sender")
