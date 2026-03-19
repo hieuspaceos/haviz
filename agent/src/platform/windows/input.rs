@@ -84,8 +84,8 @@ pub(super) fn set_clipboard(text: &str) -> Result<(), String> {
         EmptyClipboard().map_err(|e| format!("EmptyClipboard failed: {}", e))?;
 
         // SetClipboardData takes ownership of hmem on success — do not free it
-        // Second param is Option<HANDLE>; wrap HGLOBAL.0 (*mut c_void) as HANDLE
-        SetClipboardData(CF_UNICODETEXT, Some(HANDLE(hmem.0)))
+        // Pass HANDLE wrapping the HGLOBAL pointer directly (not Option)
+        SetClipboardData(CF_UNICODETEXT, HANDLE(hmem.0))
             .map_err(|e| format!("SetClipboardData failed: {}", e))?;
 
         CloseClipboard().map_err(|e| format!("CloseClipboard failed: {}", e))?;

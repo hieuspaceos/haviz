@@ -1,10 +1,12 @@
 mod ai;
+mod auth;
 mod channels;
 mod config;
 mod db;
 mod message_parser;
 mod platform;
 mod polling;
+mod safety;
 mod server;
 
 #[cfg(target_os = "macos")]
