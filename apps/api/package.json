@@ -1,0 +1,29 @@
+{
+  "name": "@haviz/api",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc",
+    "test": "vitest run",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "drizzle-kit migrate",
+    "db:push": "drizzle-kit push"
+  },
+  "dependencies": {
+    "@hono/node-server": "^1",
+    "@supabase/supabase-js": "^2.99.2",
+    "dotenv": "^16",
+    "drizzle-orm": "^0.38",
+    "hono": "^4",
+    "postgres": "^3",
+    "zod": "^3"
+  },
+  "devDependencies": {
+    "@types/node": "^22",
+    "drizzle-kit": "^0.30",
+    "tsx": "^4",
+    "typescript": "~5.9",
+    "vitest": "^4.1.0"
+  }
+}
