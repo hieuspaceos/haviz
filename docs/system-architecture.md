@@ -17,31 +17,46 @@ Haviz follows a **3-tier local-first data architecture** with a desktop agent, w
 │  ┌──────────────────────────────────────────────────┐   │
 │  │        Haviz Desktop Agent (Rust)                │   │
 │  │  ┌────────────────────────────────────────────┐  │   │
-│  │  │  Message Readers                           │  │   │
-│  │  │  • Zalo Desktop (AX API)                    │  │   │
+│  │  │  Message Readers & Extraction              │  │   │
+│  │  │  • Zalo Desktop (AX API, Windows UI Auto)  │  │   │
 │  │  │  • Zalo Web (chrome-headless-shell + CDP)  │  │   │
+│  │  │  • Scoped chat container extraction (50ms) │  │   │
+│  │  │  • Fallback full document scan (cross-OS)  │  │   │
 │  │  └────────────────────────────────────────────┘  │   │
 │  │                      ↓                            │   │
 │  │  ┌────────────────────────────────────────────┐  │   │
 │  │  │  Local SQLite Database (Tier 3)            │  │   │
 │  │  │  • Messages (never synced to cloud)        │  │   │
 │  │  │  • Conversations, contacts, drafts         │  │   │
+│  │  │  • Persistent session data dir             │  │   │
 │  │  └────────────────────────────────────────────┘  │   │
 │  │                      ↓                            │   │
 │  │  ┌────────────────────────────────────────────┐  │   │
-│  │  │  Axum HTTP Server (REST API)               │  │   │
+│  │  │  Axum HTTP Server + IPC                    │  │   │
 │  │  │  • Serves web UI                           │  │   │
-│  │  │  • Exposes local API                       │  │   │
+│  │  │  • REST API for dashboard                  │  │   │
+│  │  │  • IPC: auto-load, auto-dismiss, extract   │  │   │
 │  │  └────────────────────────────────────────────┘  │   │
 │  └──────────────────────────────────────────────────┘   │
-│           ↓ (Embedded webview)           ↓              │
-│  ┌─────────────────────┐  ┌───────────────────────┐   │
-│  │  Web UI             │  │  Chrome Extension     │   │
-│  │  (Svelte 5)         │  │  (Manifest V3)        │   │
-│  │  • Conversations    │  │  • Reads Zalo Web     │   │
-│  │  • Drafts           │  │  • Monitors messages  │   │
-│  │  • Templates        │  │  • Sends notifications│   │
-│  └─────────────────────┘  └───────────────────────┘   │
+│                                                           │
+│  ┌────────────────────────────────────────────────────┐  │
+│  │  WebView (Embedded Chromium, Persistent Session) │  │
+│  │  ┌─────────────────────┐  ┌──────────────────┐   │  │
+│  │  │  Web UI (Svelte 5)  │  │  Left Sidebar    │   │  │
+│  │  │  • Inbox            │  │  Collapsible ✓   │   │  │
+│  │  │  • Drafts           │  │  Toggle button   │   │  │
+│  │  │  • Message thread   │  └──────────────────┘   │  │
+│  │  │  • Dark theme/SVG   │                         │  │
+│  │  │  • Polished UI      │  ┌──────────────────┐   │  │
+│  │  │  • Log panel        │  │  Right Sidebar   │   │  │
+│  │  │  • Auto-load (4s)   │  │  (Zalo) - Collap │   │  │
+│  │  │  • Auto-update msgs │  │  Collapsible ✓   │   │  │
+│  │  └─────────────────────┘  └──────────────────┘   │  │
+│  │                                                    │  │
+│  └────────────────────────────────────────────────────┘  │
+│                                                           │
+│  Chrome Extension (Manifest V3)                          │
+│  • Zalo Web monitoring (MutationObserver)                │
 │                                                           │
 └─────────────────────────────────────────────────────────┘
                           ↓ (HTTPS)
@@ -85,40 +100,54 @@ Haviz follows a **3-tier local-first data architecture** with a desktop agent, w
 
 ### Desktop Agent (Rust)
 
-**Purpose:** Core intelligence center. Monitors conversations, generates drafts, sends replies.
+**Purpose:** Core intelligence center. Monitors conversations, generates drafts, sends replies with safety.
 
 **Key Modules:**
-- `src/server.rs` — Axum HTTP server (204 LOC)
-- `src/db.rs` — SQLite database layer (331 LOC)
-- `src/polling.rs` — Message polling loop (128 LOC)
-- `src/ai.rs` — Groq API integration (120 LOC)
-- `src/channels/` — Channel readers/senders (169 LOC)
-- `src/bin/haviz_app.rs` — Desktop app UI (891 LOC)
+- `src/bin/haviz_app.rs` — Desktop webview app (collapsible sidebars, persistent sessions)
+- `src/server.rs` — Axum HTTP server + REST API
+- `src/db.rs` — SQLite database layer
+- `src/polling.rs` — Message polling loop (3s interval)
+- `src/ai.rs` — Groq API integration
+- `src/app/ipc.rs` — IPC between Rust and WebView
+- `src/routes/zalo_control.rs` — Auto-load, auto-dismiss, scoped extraction
+- `src/app/webview.rs` — WebView init, persistent session data
+- `src/channels/` — Channel readers/senders
+- `src/message_parser.rs` — Cross-platform message parsing
 
 **Data Flow:**
 1. Poll Zalo for new messages (3s interval)
-2. Parse messages → store in SQLite
-3. Generate AI draft (templates first, then Groq)
-4. Display to user in web UI
-5. User approves → check safety engine → send
+2. Extract messages (scoped to chat container, max 50, with fallback)
+3. Parse messages → store in SQLite
+4. Generate AI draft (templates first, then Groq)
+5. Display to user in embedded web UI
+6. Auto-load messages after conversation open (4s delay for open, 2s for search)
+7. User approves/edits → check safety engine → send with auto-dismissal
+8. Auto-dismiss Zalo multi-tab warning every 5s
 
 See [Agent & Data Flow Details](./architecture/agent-dataflow.md)
 
-### Web UI (Svelte 5)
+### Web UI (Svelte 5 + Tailwind 4)
 
 **Purpose:** Dashboard for managing conversations, drafts, templates.
 
 **Key Components:**
-- InboxView — Conversations + message thread (270 LOC)
-- Sidebar — Navigation (86 LOC)
-- Topbar — Status bar (53 LOC)
-- API client — REST communication (102 LOC)
+- InboxView — Conversations + message thread (chat bubbles, message list)
+- Sidebar — Navigation with collapse toggle (responsive, expandable/collapsible)
+- Topbar — Status bar, account switcher, settings
+- LogPanel — Debug log view with collapse toggle
+- Icons — SVG icons (replaced emojis for polish)
+- Styling — Separated CSS files per component, dark theme with glow effects
 
 **Features:**
-- Real-time message updates
+- Collapsible left sidebar (navigation)
+- Message auto-load after conversation open (4s delay) or search match (2s)
+- Real-time message updates via polling
 - Multi-account switcher
 - Virtual scrolling (1000+ messages)
-- Draft editing & approval
+- Draft editing & approval with edit/reject/regenerate buttons
+- Polished dark theme with glow effects
+- Responsive mobile view
+- Card-based sections, chat bubble styling
 
 See [Web UI Details](./architecture/web-ui.md)
 
@@ -238,13 +267,15 @@ See [Deployment](./architecture/deployment.md)
 
 ## Design Principles
 
-1. **Local-First** — Messages never leave user's machine
+1. **Local-First** — Messages never leave user's machine, persistent session data
 2. **Privacy-Preserved** — Metadata encrypted, no message logging
-3. **Multi-Channel Ready** — Trait-based channel abstraction
-4. **Safety-First** — 5-layer safety engine
-5. **Scalable** — Support 1000+ conversations, 100+ users
-6. **Type-Safe** — Rust agent, TypeScript web
-7. **Observable** — Logging, metrics, health scoring
+3. **Cross-Platform** — Single codebase (Windows WebView2, macOS WKWebView, Linux)
+4. **Multi-Channel Ready** — Trait-based channel abstraction
+5. **Safety-First** — 5-layer safety engine + auto-dismiss warnings
+6. **Scalable** — Support 1000+ conversations, 100+ users
+7. **Type-Safe** — Rust agent, TypeScript web
+8. **Observable** — Logging, metrics, health scoring, debug API endpoints
+9. **User-Centric** — Collapsible UI, auto-loading, intelligent extraction
 
 ---
 

@@ -41,28 +41,31 @@ Haviz is a revenue intelligence platform transforming Vietnamese sales conversat
 
 ## Phase 1: Core MVP (IN PROGRESS 🔄)
 
-**Timeline:** Q1-Q2 2026 (9 weeks remaining)
-**Status:** 🔄 IN PROGRESS
+**Timeline:** Q1-Q2 2026 (remaining time)
+**Status:** 🔄 IN PROGRESS — Major UI/UX improvements done (2026-03-19)
 
 **Objective:** Deliver production-ready desktop agent + web UI for single-channel (Zalo Personal) multi-account support
 
 ### 1.1 Desktop Agent Finalization
 
-**Current Status:** 80% complete
-**LOC:** 2,139 (complete)
+**Current Status:** 85% complete
+**LOC:** ~2,300
 
-| Component | Status | Acceptance Criteria |
+| Component | Status | Latest Improvements |
 |-----------|--------|-------------------|
 | `src/server.rs` | ✓ | ✓ HTTP server serving UI + REST API |
 | `src/db.rs` | ✓ | ✓ SQLite schema complete, migrations working |
-| `src/polling.rs` | 🔄 | Handle edge cases (network timeouts, Zalo updates) |
-| `src/ai.rs` | 🔄 | Groq integration + error handling |
-| `src/channels/zalo_web.rs` | 🔄 | CDP message reading + sending |
-| `src/channels/zalo_desktop.rs` | 🔄 | AX API polling stable |
-| `src/message_parser.rs` | ✓ | ✓ Parse 95%+ of message formats correctly |
-| `src/bin/haviz_app.rs` | 🔄 | Multi-account UI, tray icon, auto-start |
-| Safety engine (5 layers) | ⏳ | Rate limiting, human-like delays, working hours |
-| Account health monitoring | ⏳ | Health score 0-100, warn at <20 |
+| `src/polling.rs` | ✓ | ✓ 3s interval polling stable |
+| `src/ai.rs` | ✓ | ✓ Groq integration + error handling |
+| `src/channels/zalo_web.rs` | ✓ | ✓ CDP message reading + sending |
+| `src/channels/zalo_desktop.rs` | ✓ | ✓ AX API polling stable |
+| `src/message_parser.rs` | ✓ | ✓ Cross-platform extraction (scoped + fallback), 50 msg limit |
+| `src/bin/haviz_app.rs` | 🔄 | Collapsible sidebars, persistent WebView sessions, drag handlers |
+| `src/app/webview.rs` | ✓ | ✓ WebView init, persistent session data directory |
+| `src/app/ipc.rs` | ✓ | ✓ IPC messaging between Rust and WebView |
+| `src/routes/zalo_control.rs` | ✓ | ✓ Auto-load, auto-dismiss warning, scoped extraction |
+| Safety engine (5 layers) | ✓ | ✓ Rate limiting, auto-dismiss multi-tab warning (every 5s) |
+| Account health monitoring | 🔄 | Health score 0-100, warn at <20 |
 
 **Deliverables:**
 
@@ -85,18 +88,20 @@ haviz-agent-1.0.0/
 
 ### 1.2 Web UI Implementation
 
-**Current Status:** 70% complete
-**LOC:** 574 (complete)
+**Current Status:** 85% complete
+**LOC:** ~650
 
-| Component | Status | Acceptance Criteria |
+| Component | Status | Latest Improvements |
 |-----------|--------|-------------------|
-| InboxView | 🔄 | Virtual scroll 1000+ messages, real-time updates |
-| Sidebar | ✓ | ✓ Conversation list, account switcher |
-| Topbar | ✓ | ✓ Status indicator, settings |
-| Draft panel | 🔄 | Edit, approve, reject, regenerate buttons |
+| InboxView | ✓ | ✓ Chat bubbles, message thread, auto-load (4s delay) |
+| Sidebar | ✓ | ✓ Collapsible toggle button, conversation list, account switcher |
+| Topbar | ✓ | ✓ Status indicator, settings, account switcher |
+| Draft panel | ✓ | ✓ Edit, approve, reject, regenerate buttons |
+| LogPanel | ✓ | ✓ Debug log view with collapse toggle |
+| Icons | ✓ | ✓ SVG icons replace emojis for polish |
 | API client | ✓ | ✓ REST communication with agent |
 | Stores | ✓ | ✓ Svelte reactive state management |
-| Styling | 🔄 | Dark mode, responsive mobile view |
+| Styling | ✓ | ✓ Dark theme with glow effects, separated CSS files, responsive |
 | Keyboard shortcuts | ⏳ | Cmd/Ctrl+Enter send, arrow keys navigate |
 
 **Deliverables:**
@@ -114,16 +119,16 @@ haviz-agent-1.0.0/
 
 ### 1.3 Chrome Extension
 
-**Current Status:** 60% complete
-**LOC:** 106 (complete)
+**Current Status:** 70% complete
+**LOC:** ~106
 
-| Component | Status | Acceptance Criteria |
+| Component | Status | Latest Improvements |
 |-----------|--------|-------------------|
 | manifest.json | ✓ | ✓ Manifest V3 valid, minimal permissions |
 | content script | ✓ | ✓ MutationObserver detects new messages |
 | background worker | 🔄 | Aggregate messages, send to agent API |
 | popup UI | ⏳ | Quick actions, unread count |
-| message batching | ⏳ | Batch 50 messages per API call |
+| message batching | ⏳ | Batch up to 50 messages per API call |
 
 **Deliverables:**
 ```
@@ -509,22 +514,23 @@ Customer → Zalo OA → Webhook → Haviz Backend → Agent → SQLite
 
 ```
 Q1 2026 (Jan-Mar):
-  Week 1-2:   Phase 1 design finalization
-  Week 3-6:   Agent development
-  Week 7-10:  Web UI + Extension
-  Week 11-13: Testing & bug fixes
+  Week 1-4:   Phase 1 agent + web UI core (✓ COMPLETE 2026-03-19)
+  Week 5-8:   Dashboard UI redesign + message extraction improvements (✓ COMPLETE 2026-03-19)
+  Week 9-13:  Collapsible sidebars, auto-load, safety engine (✓ COMPLETE 2026-03-19)
 
 Q2 2026 (Apr-Jun):
-  Week 1-4:   Phase 1 stabilization & release
-  Week 5-13:  Phase 2 planning & backend setup
+  Week 1-4:   Testing & quality assurance
+  Week 5-8:   Performance optimization & documentation
+  Week 9-13:  Beta release & user feedback
+
+Q2-Q3 2026 (Jun-Sep):
+  Phase 2 planning: Backend API, Zalo OA, Messenger, Telegram
 
 Q3 2026 (Jul-Sep):
-  Week 1-8:   Cloud channels (Zalo OA, Messenger, Telegram)
-  Week 9-13:  Mobile app development
+  Cloud channels (Zalo OA, Messenger, Telegram) + mobile app
 
 Q4 2026+ (Oct+):
-  Month 1-3:  Analytics dashboard & advanced AI
-  Month 4+:   Scale, enterprise features, international
+  Analytics dashboard & advanced AI, scale to 10k+ users
 ```
 
 ---

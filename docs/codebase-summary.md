@@ -31,25 +31,29 @@ haviz/
 
 ## File Organization & Key Files
 
-### Agent (Rust) — 2,139 LOC
+### Agent (Rust) — ~2,300 LOC
 
 Located: `agent/`
 
-| File | LOC | Purpose |
-|------|-----|---------|
-| `src/bin/haviz_app.rs` | 891 | Desktop app entry point, wry webview, tray, multi-account UI |
-| `src/db.rs` | 331 | SQLite database layer (messages, conversations, contacts, drafts) |
-| `src/server.rs` | 204 | Axum HTTP server, REST API, web UI serving |
-| `src/polling.rs` | 128 | Polls Zalo Desktop for new messages via AX API (3s interval) |
-| `src/ai.rs` | 120 | Groq API integration for AI draft generation |
-| `src/channels/zalo_web.rs` | 133 | Zalo Web via chrome-headless-shell + Chrome DevTools Protocol |
-| `src/channels/traits.rs` | 9 | ChannelReader + ChannelSender abstractions |
-| `src/message_parser.rs` | 63 | Parse raw AX text into structured messages |
-| `src/main.rs` | 77 | CLI entry point, starts axum server |
-| `src/config.rs` | 39 | Configuration management |
-| `src/platform/macos/accessibility.rs` | 25 | macOS Accessibility API |
-| `src/platform/macos/automation.rs` | 77 | AppleScript automation |
-| `src/channels/zalo_desktop.rs` | 27 | Zalo Desktop channel adapter |
+| File | Purpose |
+|------|---------|
+| `src/bin/haviz_app.rs` | Desktop app entry point, wry webview, tray, collapsible sidebar, multi-account UI |
+| `src/db.rs` | SQLite database layer (messages, conversations, contacts, drafts) |
+| `src/server.rs` | Axum HTTP server, REST API, web UI serving |
+| `src/polling.rs` | Polls Zalo Desktop for new messages via AX API (3s interval) |
+| `src/ai.rs` | Groq API integration for AI draft generation |
+| `src/channels/zalo_web.rs` | Zalo Web via chrome-headless-shell + Chrome DevTools Protocol |
+| `src/routes/zalo_control.rs` | IPC routes: auto-dismiss warning, auto-load messages, scoped message extraction |
+| `src/app/webview.rs` | WebView initialization, persistent session data directory |
+| `src/app/ipc.rs` | IPC (Inter-Process Communication) between Rust agent and WebView |
+| `src/channels/traits.rs` | ChannelReader + ChannelSender abstractions |
+| `src/message_parser.rs` | Parse raw AX text into structured messages (cross-platform fallback) |
+| `src/main.rs` | CLI entry point, starts axum server |
+| `src/config.rs` | Configuration management |
+| `src/platform/macos/accessibility.rs` | macOS Accessibility API access |
+| `src/platform/macos/automation.rs` | AppleScript automation |
+| `src/platform/windows/uiautomation.rs` | Windows UI Automation access |
+| `src/channels/zalo_desktop.rs` | Zalo Desktop channel adapter |
 
 **Key Dependencies:**
 - `axum 0.7` — HTTP framework
@@ -59,19 +63,23 @@ Located: `agent/`
 - `tao` — window/event handling
 - `groq-sdk` — AI API client
 
-### Web UI (Svelte 5) — 574 LOC
+### Web UI (Svelte 5) — ~650 LOC
 
 Located: `apps/web/src/`
 
-| File | LOC | Purpose |
-|------|-----|---------|
-| `InboxView.svelte` | 270 | Main conversation view, message thread, AI draft panel |
-| `Sidebar.svelte` | 86 | Navigation sidebar |
-| `Topbar.svelte` | 53 | Top navigation bar & status indicators |
-| `lib/api/client.ts` | 102 | TypeScript API client for agent REST API |
-| `App.svelte` | 18 | Root layout component |
-| `lib/stores/app.ts` | 16 | Svelte reactive stores |
-| `LogPanel.svelte` | 15 | Debug log panel |
+| File | Purpose |
+|------|---------|
+| `InboxView.svelte` | Main conversation view, message thread, AI draft panel |
+| `Sidebar.svelte` | Navigation sidebar with collapse toggle, collapsible layout |
+| `Topbar.svelte` | Top navigation bar, status indicators, account switcher |
+| `lib/components/icons.ts` | SVG icon components (replaced emojis) |
+| `lib/components/inbox-view.css` | Chat bubble styling, message layout |
+| `lib/components/sidebar.css` | Sidebar responsive styling, collapse animation |
+| `app.css` | Global dark theme with glow effects |
+| `lib/api/client.ts` | TypeScript API client for agent REST API |
+| `App.svelte` | Root layout component |
+| `lib/stores/app.ts` | Svelte reactive stores |
+| `LogPanel.svelte` | Debug log panel with collapse |
 
 **Build Config:**
 - Svelte 5 (latest)
@@ -155,16 +163,23 @@ AGENT_AUTH_TOKEN=...                    # Agent authentication token
 
 1. **Message Polling** (every 3s):
    - Agent polls Zalo Desktop via AX API or chrome-headless-shell
+   - Scoped message extraction to chat container with fallback to full scan
+   - Up to 50 messages extracted per session
    - Raw messages stored in local SQLite
 
-2. **AI Draft Generation**:
+2. **Auto-Load on Conversation Open**:
+   - 4s delay for open, 2s for direct search match
+   - Messages load in background while user reads thread
+
+3. **AI Draft Generation**:
    - Template matching first (0 cost)
    - If no match: call Groq API with anonymized input
    - ~200 tokens per request, ~$0.05/month per salesperson
 
-3. **Message Sending**:
-   - User approves/edits/rejects draft
+4. **Message Sending**:
+   - User approves/edits/rejects draft in dashboard
    - Agent sends via Zalo with human-like delays & safety checks
+   - Auto-dismiss Zalo multi-tab warning every 5s
 
 ### Safety Engine (5 Layers)
 

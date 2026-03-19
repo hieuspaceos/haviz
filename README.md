@@ -23,14 +23,14 @@ Haviz is a monorepo containing:
 
 ## What's Implemented
 
-| Component | Tech | Status |
-|-----------|------|--------|
-| Desktop Agent | Rust + axum + wry | ✓ Implemented |
-| Web Dashboard | Svelte 5 + Vite 8 + Tailwind 4 | ✓ Implemented |
-| Chrome Extension | Manifest V3 | ✓ Implemented |
-| Backend API | Hono + Drizzle | ⏳ Planned |
-| Mobile App | React Native/Expo | ⏳ Planned |
-| Zalo OA Support | Cloud API | ⏳ Planned |
+| Component | Tech | Status | Key Features |
+|-----------|------|--------|--------------|
+| Desktop Agent | Rust + axum + wry | ✓ Implemented | Message polling, drafts, safety engine, multi-account |
+| Web Dashboard | Svelte 5 + Vite 8 + Tailwind 4 | ✓ Implemented | Collapsible sidebar, message view, draft editor, dark theme |
+| Chrome Extension | Manifest V3 | ✓ Implemented | Zalo Web monitoring, message extraction |
+| Backend API | Hono + Drizzle | ⏳ Planned | Auth, templates, cloud channels |
+| Mobile App | React Native/Expo | ⏳ Planned | Approve drafts on-the-go |
+| Zalo OA Support | Cloud API | ⏳ Planned | Official Account integration |
 
 ## Getting Started
 
@@ -68,8 +68,11 @@ docker-compose up -d
 # Web UI dev server (http://localhost:3333)
 cd apps/web && pnpm dev
 
-# Agent (Rust) — build & run desktop app
+# Agent — build & run desktop app (outputs haviz-app + haviz_app binaries)
 cd agent && pnpm build && pnpm start
+
+# Agent — run CLI server only (headless, no WebView)
+cd agent && cargo run --bin haviz
 
 # Chrome extension — load in Chrome via chrome://extensions/
 # -> "Load unpacked" -> extensions/chrome
@@ -102,23 +105,26 @@ haviz/
 
 ## Key Features (Phase 1)
 
-### Message Reading
+### Message Reading & Extraction
 - **Zalo Desktop** — via macOS Accessibility API (AX)
-- **Zalo Web** — via chrome-headless-shell + Chrome DevTools Protocol
+- **Zalo Web** — via chrome-headless-shell + Chrome DevTools Protocol (CDP)
+- **Extraction** — Scoped to chat container with fallback to full document scan (cross-platform)
+- **Limit** — Up to 50 messages extracted per session
 - **Polling interval** — 3 seconds (near real-time)
 
-### AI Reply Drafts
+### AI Reply Drafts & Auto-Load
 - **Template matching first** (0 cost)
 - **Groq Llama 4 Scout API** (fallback)
 - ~200 tokens/request, ~$0.05/month per salesperson
-- **Human editing** — User approves, edits, or rejects
+- **Auto-load** — Messages auto-load 4s after open, 2s after direct search match
+- **Human editing** — User approves, edits, or rejects draft in dashboard
 
 ### Safety Engine (5 Layers)
-1. Rate limiting (5/min, 30/hour, 300/day)
-2. Human-like delays (typing, random waits)
-3. Working hours (7-22 weekdays, 8-20 weekends)
-4. Content safety (no duplicates, no broadcasts)
-5. Account health monitoring
+1. **Rate limiting** — 5/min, 30/hour, 300/day per conversation
+2. **Human-like delays** — Typing simulation, random pauses
+3. **Working hours** — 7:00-22:00 weekdays, 8:00-20:00 weekends (VN timezone)
+4. **Content safety** — No duplicates, no broadcasts, blacklist patterns
+5. **Account health** — 0-100 score, warnings at <20, auto-dismiss multi-tab warning
 
 ### Multi-Account Support
 - Multiple Zalo personal accounts
