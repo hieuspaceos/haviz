@@ -14,8 +14,15 @@
 
   async function refresh() {
     try {
-      const data = await api.zalo.conversations();
-      $zaloConversations = data.conversations?.filter(c => c.name?.trim()) || [];
+      // Try Zalo WebView IPC first, fallback to local SQLite
+      let data: any;
+      try {
+        data = await api.zalo.conversations();
+      } catch {
+        data = await api.conversations();
+      }
+      $zaloConversations = data.conversations?.filter((c: any) => c.name?.trim() || c.contact_name?.trim())
+        .map((c: any) => ({ name: c.name || c.contact_name, time: c.time || '', preview: c.preview || c.last_message_preview || '', sender: c.sender || '' })) || [];
       addLog(`${$zaloConversations.length} conversations loaded`);
     } catch (e) {
       addLog('Failed to load conversations', 'err');

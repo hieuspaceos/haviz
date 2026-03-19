@@ -21,14 +21,15 @@ pub struct ZaloMessage {
     pub timestamp: String,
 }
 
-/// Find the Zalo Desktop top-level window by its registered class name.
+/// Find the Zalo Desktop top-level window.
+/// Tries window title "Zalo" with Electron class "Chrome_WidgetWin_1".
 /// Returns raw HWND pointer value as isize; error string on failure.
 pub fn find_zalo_window() -> Result<isize, String> {
-    // Zalo Desktop on Windows registers this window class
-    let class_wide: Vec<u16> = "ZPMainWnd\0".encode_utf16().collect();
+    // Find by window title "Zalo" — works regardless of class name
+    let title_wide: Vec<u16> = "Zalo\0".encode_utf16().collect();
 
     let hwnd = unsafe {
-        FindWindowW(PCWSTR(class_wide.as_ptr()), PCWSTR::null())
+        FindWindowW(PCWSTR::null(), PCWSTR(title_wide.as_ptr()))
             .map_err(|_| "zalo_not_running".to_string())?
     };
 
