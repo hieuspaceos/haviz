@@ -154,6 +154,19 @@ pub const JS_DEBUG_DOM: &str = r#"(function(){
     // Also check if contenteditable exists (indicates chat is open)
     var ce=document.querySelector('[contenteditable="true"]');
     info.chatInputFound=!!ce;
+    // Find all clickable elements with text (buttons, links, divs with onclick)
+    var clickables=[];
+    var els=document.querySelectorAll('button,a,[role="button"],[onclick],div');
+    for(var c=0;c<els.length;c++){
+        var el=els[c];
+        var t=el.textContent?el.textContent.trim():'';
+        if(t.length>0&&t.length<50){
+            var tag=el.tagName;
+            var cls2=(typeof el.className==='string')?el.className.substring(0,60):'';
+            clickables.push({tag:tag,text:t,cls:cls2});
+        }
+    }
+    info.clickables=clickables.slice(0,30);
     if(window.ipc&&window.ipc.postMessage){
         window.ipc.postMessage(JSON.stringify(info));
     }
@@ -162,11 +175,12 @@ pub const JS_DEBUG_DOM: &str = r#"(function(){
 /// Auto-click "Kích hoạt" button when Zalo shows the multi-tab warning.
 /// Runs periodically to dismiss the warning automatically.
 pub const JS_AUTO_ACTIVATE: &str = r#"(function(){
-    var btns=document.querySelectorAll('button');
-    for(var i=0;i<btns.length;i++){
-        var t=btns[i].textContent?btns[i].textContent.trim():'';
+    var all=document.querySelectorAll('button,a,div,span,[role="button"]');
+    for(var i=0;i<all.length;i++){
+        var el=all[i];
+        var t=el.textContent?el.textContent.trim():'';
         if(t==='Kích hoạt'||t==='Activate'){
-            btns[i].click();
+            el.click();
             return;
         }
     }
