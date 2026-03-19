@@ -59,6 +59,14 @@ fn main() {
         let _ = proxy2.send_event(UserEvent::ProcessJsQueue);
     });
 
+    // Auto-click "Kích hoạt" every 5s to dismiss Zalo multi-tab warning
+    std::thread::spawn(|| loop {
+        std::thread::sleep(std::time::Duration::from_secs(5));
+        let _ = haviz_agent::app::ipc::eval_zalo_js(
+            haviz_agent::routes::zalo_scripts::JS_AUTO_ACTIVATE
+        );
+    });
+
     // Track window size for resize events
     let mut win_w = WINDOW_W;
     let mut win_h = WINDOW_H;

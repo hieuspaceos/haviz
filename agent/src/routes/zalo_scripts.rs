@@ -159,6 +159,19 @@ pub const JS_DEBUG_DOM: &str = r#"(function(){
     }
 })();"#;
 
+/// Auto-click "Kích hoạt" button when Zalo shows the multi-tab warning.
+/// Runs periodically to dismiss the warning automatically.
+pub const JS_AUTO_ACTIVATE: &str = r#"(function(){
+    var btns=document.querySelectorAll('button');
+    for(var i=0;i<btns.length;i++){
+        var t=btns[i].textContent?btns[i].textContent.trim():'';
+        if(t==='Kích hoạt'||t==='Activate'){
+            btns[i].click();
+            return;
+        }
+    }
+})();"#;
+
 /// Scrolls the chat container up multiple times to trigger Zalo lazy-loading
 /// of older messages. After scrolling, waits briefly then extracts messages.
 /// Call this before JS_EXTRACT_MESSAGES for more complete history.
