@@ -121,6 +121,31 @@ pub const JS_EXTRACT_MESSAGES: &str = r#"(function(){
         if(!content||content.length<2)continue;
         messages.push({sender:'',content:content,class:cls.substring(0,40)});
     }
+    // Strategy 2: also parse innerText lines from chat container to catch
+    // messages missed by leaf-node scan (e.g. multi-line, nested elements)
+    if(chatBox){
+        var lines=chatBox.innerText.split('\n');
+        for(var k=0;k<lines.length;k++){
+            var line=lines[k].trim();
+            if(line.length<3||line.length>500)continue;
+            if(skip.has(line))continue;
+            if(skipRe.test(line))continue;
+            if(emojiRe.test(line))continue;
+            if(timeRe.test(line))continue;
+            if(shortRe.test(line))continue;
+            if(memberRe.test(line))continue;
+            if(line.endsWith(':')&&line.length<30)continue;
+            var cl=line.replace(/\d{1,2}:\d{2}/g,'').replace(/Đã gửi/g,'')
+                .replace(/Đã xem/g,'').replace(/Đã nhận/g,'').trim();
+            if(!cl||cl.length<3)continue;
+            // Only add if not already captured by leaf scan
+            var exists=false;
+            for(var m=0;m<messages.length;m++){
+                if(messages[m].content===cl){exists=true;break;}
+            }
+            if(!exists)messages.push({sender:'',content:cl,class:'innerText'});
+        }
+    }
     var seen=new Set();
     var unique=[];
     for(var j=messages.length-1;j>=0;j--){
@@ -128,7 +153,7 @@ pub const JS_EXTRACT_MESSAGES: &str = r#"(function(){
         if(!seen.has(key)){seen.add(key);unique.unshift(messages[j]);}
     }
     if(window.ipc&&window.ipc.postMessage){
-        window.ipc.postMessage(JSON.stringify(unique.slice(-50)));
+        window.ipc.postMessage(JSON.stringify(unique.slice(-100)));
     }
 })();"#;
 
