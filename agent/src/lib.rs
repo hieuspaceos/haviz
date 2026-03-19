@@ -1,8 +1,12 @@
 pub mod ai;
+pub mod app;
+pub mod auth;
 pub mod channels;
 pub mod config;
 pub mod db;
 pub mod message_parser;
 pub mod platform;
 pub mod polling;
+pub mod routes;
+pub mod safety;
 pub mod server;

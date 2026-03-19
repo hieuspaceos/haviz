@@ -15,6 +15,7 @@ tracing = "0.1"
 tracing-subscriber = "0.3"
 regex = "1"
 rusqlite = { version = "0.31", features = ["bundled"] }
+rusqlite_migration = "1"
 reqwest = { version = "0.12", features = ["json", "blocking"] }
 tower-http = { version = "0.5", features = ["cors", "fs"] }
 sha2 = "0.10"
@@ -22,3 +23,14 @@ hex = "0.4"
 dirs = "5"
 wry = "0.47"
 tao = "0.32"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows = { version = "0.58", features = [
+    "Win32_UI_Accessibility",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_System_Com",
+    "Win32_System_DataExchange",
+    "Win32_System_Memory",
+    "Win32_Foundation",
+    "Win32_UI_WindowsAndMessaging",
+] }

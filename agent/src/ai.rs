@@ -118,3 +118,77 @@ pub async fn generate_draft(
 
     Err("No response from Groq".to_string())
 }
+
+/// Build the system prompt string (pure logic, no I/O — testable).
+pub fn build_system_prompt(org_context: Option<&str>) -> String {
+    let mut system = SYSTEM_PROMPT.to_string();
+    if let Some(ctx) = org_context {
+        system.push_str(&format!("\n\nBối cảnh doanh nghiệp: {}", ctx));
+    }
+    system
+}
+
+/// Format conversation messages into Groq API format (pure logic, no I/O).
+pub fn format_messages_for_groq(messages: &[ChatMessage]) -> Vec<GroqMessage> {
+    let recent = if messages.len() > 5 {
+        &messages[messages.len() - 5..]
+    } else {
+        messages
+    };
+    recent
+        .iter()
+        .map(|msg| {
+            let role = if msg.direction == "inbound" { "user" } else { "assistant" };
+            GroqMessage {
+                role: role.to_string(),
+                content: format!("{}: {}", msg.sender, msg.content),
+            }
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_build_system_prompt_without_context() {
+        let prompt = build_system_prompt(None);
+        assert!(prompt.contains("trợ lý bán hàng"));
+        assert!(!prompt.contains("Bối cảnh doanh nghiệp"));
+    }
+
+    #[test]
+    fn test_build_system_prompt_with_context() {
+        let prompt = build_system_prompt(Some("Cửa hàng thời trang ABC"));
+        assert!(prompt.contains("Bối cảnh doanh nghiệp: Cửa hàng thời trang ABC"));
+    }
+
+    #[test]
+    fn test_format_messages_assigns_roles_correctly() {
+        let messages = vec![
+            ChatMessage { sender: "Customer".to_string(), content: "Hello".to_string(), direction: "inbound".to_string() },
+            ChatMessage { sender: "Me".to_string(), content: "Hi there".to_string(), direction: "outbound".to_string() },
+        ];
+        let groq_msgs = format_messages_for_groq(&messages);
+        assert_eq!(groq_msgs.len(), 2);
+        assert_eq!(groq_msgs[0].role, "user");
+        assert_eq!(groq_msgs[1].role, "assistant");
+        assert!(groq_msgs[0].content.contains("Customer: Hello"));
+    }
+
+    #[test]
+    fn test_format_messages_limits_to_last_5() {
+        let messages: Vec<ChatMessage> = (0..8)
+            .map(|i| ChatMessage {
+                sender: "User".to_string(),
+                content: format!("msg {}", i),
+                direction: "inbound".to_string(),
+            })
+            .collect();
+        let groq_msgs = format_messages_for_groq(&messages);
+        assert_eq!(groq_msgs.len(), 5);
+        // Should be the last 5: msg 3..7
+        assert!(groq_msgs[0].content.contains("msg 3"));
+    }
+}

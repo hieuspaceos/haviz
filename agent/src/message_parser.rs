@@ -61,3 +61,67 @@ pub struct RawMessage {
     pub content: String,
     pub timestamp: String,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_compute_hash_is_deterministic() {
+        let h1 = compute_hash("Alice", "Hello", "2024-01-01T10:00:00Z");
+        let h2 = compute_hash("Alice", "Hello", "2024-01-01T10:00:00Z");
+        assert_eq!(h1, h2);
+        // Different inputs produce different hashes
+        let h3 = compute_hash("Bob", "Hello", "2024-01-01T10:00:00Z");
+        assert_ne!(h1, h3);
+    }
+
+    #[test]
+    fn test_determine_direction_inbound() {
+        assert_eq!(determine_direction("Customer A", "Alice"), "inbound");
+    }
+
+    #[test]
+    fn test_determine_direction_outbound() {
+        assert_eq!(determine_direction("Alice", "Alice"), "outbound");
+    }
+
+    #[test]
+    fn test_determine_direction_empty_my_name() {
+        // When my_name is empty, always inbound
+        assert_eq!(determine_direction("Alice", ""), "inbound");
+    }
+
+    #[test]
+    fn test_parse_snapshot_valid_json() {
+        let json = r#"{
+            "conversation_name": "Test Chat",
+            "messages": [
+                {"sender": "Customer", "content": "Xin chào", "timestamp": "10:00"},
+                {"sender": "Alice", "content": "Chào bạn!", "timestamp": "10:01"}
+            ]
+        }"#;
+        let result = parse_snapshot(json, "Alice");
+        assert!(result.is_ok());
+        let msgs = result.unwrap();
+        assert_eq!(msgs.len(), 2);
+        assert_eq!(msgs[0].direction, "inbound");
+        assert_eq!(msgs[1].direction, "outbound");
+        assert_eq!(msgs[0].sender, "Customer");
+        assert!(!msgs[0].content_hash.is_empty());
+    }
+
+    #[test]
+    fn test_parse_snapshot_empty_messages() {
+        let json = r#"{"conversation_name": null, "messages": []}"#;
+        let result = parse_snapshot(json, "Alice");
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_parse_snapshot_invalid_json() {
+        let result = parse_snapshot("not valid json", "Alice");
+        assert!(result.is_err());
+    }
+}
