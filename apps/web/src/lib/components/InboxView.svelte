@@ -20,6 +20,10 @@
       const data = await api.zalo.search(searchQuery);
       searchResults = data.conversations?.filter((c: any) => c.name?.trim()) || [];
       addLog(`${searchResults.length} results`);
+      // Search API already opens the first result — auto-load messages
+      if (searchResults.length === 0) {
+        setTimeout(() => loadMessages(), 2000);
+      }
     } catch (e) { addLog('Search failed', 'err'); }
   }
 
@@ -27,7 +31,9 @@
     try {
       await api.zalo.open(index);
       addLog(`Opened #${index}`);
-      searchResults = []; searchQuery = '';
+      searchResults = [];
+      // Wait for Zalo to load the conversation, then auto-load messages
+      setTimeout(() => loadMessages(), 4000);
     } catch (e) { addLog('Open failed', 'err'); }
   }
 
