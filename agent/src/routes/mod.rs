@@ -12,7 +12,7 @@ pub mod zalo_scripts;
 
 /// Build the extended router with all non-base routes merged with the base router.
 pub fn extended_router(db: Arc<Database>) -> Router {
-    crate::server::create_router(db)
+    let router = crate::server::create_router(db)
         .route("/api/ai/draft", post(ai_draft::ai_draft_handler))
         .route("/api/screenshot", get(screenshot::screenshot_handler))
         .route("/api/zalo/conversations", get(zalo_control::zalo_conversations_handler))
@@ -22,5 +22,11 @@ pub fn extended_router(db: Arc<Database>) -> Router {
         .route("/api/zalo/open", post(zalo_control::zalo_open_handler))
         .route("/api/zalo/send", post(zalo_control::zalo_send_handler))
         .route("/api/zalo/search-and-send", post(zalo_control::zalo_search_and_send_handler))
-        .route("/api/zalo/debug", get(zalo_control::zalo_debug_handler))
+        .route("/api/zalo/debug", get(zalo_control::zalo_debug_handler));
+
+    // Windows-only: Zalo Desktop UI Automation route
+    #[cfg(target_os = "windows")]
+    let router = router.route("/api/zalo/desktop", get(zalo_control::zalo_desktop_handler));
+
+    router
 }

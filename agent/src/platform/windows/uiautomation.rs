@@ -101,17 +101,47 @@ fn read_messages_inner(hwnd: HWND) -> Result<Vec<ZaloMessage>, String> {
             .map_err(|e| format!("ElementFromHandle failed: {}", e))?
     };
 
-    // Content view walker skips purely decorative/hidden elements
+    // RawViewWalker traverses ALL elements including Chromium/Electron web content
     let walker: IUIAutomationTreeWalker = unsafe {
         automation
-            .ContentViewWalker()
-            .map_err(|e| format!("ContentViewWalker failed: {}", e))?
+            .RawViewWalker()
+            .map_err(|e| format!("RawViewWalker failed: {}", e))?
     };
 
     let mut names: Vec<String> = Vec::new();
     collect_names(&walker, &root, 12, &mut names);
 
     Ok(parse_names_into_messages(names))
+}
+
+/// Debug: return raw names from the accessibility tree for inspection.
+pub fn read_raw_names() -> Result<Vec<String>, String> {
+    let hwnd_val = find_zalo_window()?;
+    let hwnd = HWND(hwnd_val as *mut std::ffi::c_void);
+    unsafe {
+        let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+    }
+    let result = read_raw_names_inner(hwnd);
+    unsafe { CoUninitialize() };
+    result
+}
+
+fn read_raw_names_inner(hwnd: HWND) -> Result<Vec<String>, String> {
+    let automation: IUIAutomation = unsafe {
+        CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER)
+            .map_err(|e| format!("CoCreateInstance failed: {}", e))?
+    };
+    let root: IUIAutomationElement = unsafe {
+        automation.ElementFromHandle(hwnd)
+            .map_err(|e| format!("ElementFromHandle failed: {}", e))?
+    };
+    let walker: IUIAutomationTreeWalker = unsafe {
+        automation.RawViewWalker()
+            .map_err(|e| format!("RawViewWalker failed: {}", e))?
+    };
+    let mut names: Vec<String> = Vec::new();
+    collect_names(&walker, &root, 25, &mut names);
+    Ok(names)
 }
 
 /// Heuristic grouping: Zalo Desktop accessibility tree emits tokens in order

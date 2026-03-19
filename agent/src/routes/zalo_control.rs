@@ -78,6 +78,38 @@ pub async fn zalo_debug_handler() -> Json<serde_json::Value> {
     }
 }
 
+/// GET /api/zalo/desktop — read messages from Zalo Desktop via UI Automation (Windows).
+/// Also returns raw names for debugging when messages parse empty.
+#[cfg(target_os = "windows")]
+pub async fn zalo_desktop_handler() -> Json<serde_json::Value> {
+    use crate::platform::windows::uiautomation;
+    // First check window exists
+    match uiautomation::find_zalo_window() {
+        Ok(hwnd) => {
+            match uiautomation::read_zalo_messages() {
+                Ok(msgs) => {
+                    let data: Vec<serde_json::Value> = msgs.iter().map(|m| {
+                        serde_json::json!({
+                            "sender": m.sender,
+                            "content": m.content,
+                            "timestamp": m.timestamp,
+                        })
+                    }).collect();
+                    // Also get raw names for debug
+                    let raw = uiautomation::read_raw_names().unwrap_or_default();
+                    Json(serde_json::json!({
+                        "ok": true, "source": "desktop", "hwnd": hwnd,
+                        "messages": data, "raw_names_count": raw.len(),
+                        "raw_sample": raw.iter().take(30).collect::<Vec<_>>(),
+                    }))
+                }
+                Err(e) => Json(serde_json::json!({ "ok": false, "error": e })),
+            }
+        }
+        Err(e) => Json(serde_json::json!({ "ok": false, "error": e })),
+    }
+}
+
 /// Internal GET /api/zalo/_messages_callback — receives messages via query param.
 pub async fn zalo_messages_callback(
     query: Query<std::collections::HashMap<String, String>>,
