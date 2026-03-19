@@ -1,42 +1,36 @@
-/// Haviz App — Dashboard + Zalo Web Sidebar
+/// Haviz App — Dashboard + Zalo Web Sidebar (collapsible)
 ///
-/// Layout:
-/// ┌──────────────────────────┬─────────────┐
-/// │    Haviz Dashboard       │  Zalo Web   │
-/// │    (localhost:9999)      │  Sidebar    │
-/// │    Inbox, AI Drafts      │  (~400px)   │
-/// └──────────────────────────┴─────────────┘
+/// Default: sidebar collapsed, toggle button on right edge.
+/// Click toggle to expand/collapse Zalo Web sidebar.
 
-use tao::dpi::{LogicalPosition, LogicalSize};
+use tao::dpi::LogicalSize;
 use tao::event::{Event, WindowEvent};
 use tao::event_loop::{ControlFlow, EventLoopBuilder};
 use tao::window::WindowBuilder;
-use wry::Rect;
 
 use haviz_agent::app::ipc::{UserEvent, ZALO_JS_QUEUE};
-use haviz_agent::app::webview::{build_dashboard, build_zalo_sidebar};
+use haviz_agent::app::webview::{
+    build_dashboard, build_toggle_button, build_zalo_sidebar,
+    layout_panels, update_toggle_arrow,
+};
 use haviz_agent::app::app_config::load_dotenv;
 use haviz_agent::routes::extended_router;
 
 const WINDOW_W: f64 = 1400.0;
 const WINDOW_H: f64 = 900.0;
-const SIDEBAR_W: f64 = 400.0;
 
 fn main() {
     println!("╔═══════════════════════════════════════╗");
     println!("║  Haviz — Revenue Intelligence         ║");
     println!("╚═══════════════════════════════════════╝\n");
 
-    // Spawn the HTTP agent server in a background thread
     let _agent = std::thread::spawn(|| {
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(start_agent());
     });
 
-    // Small delay to let the server bind before the WebViews try to load it
     std::thread::sleep(std::time::Duration::from_millis(500));
 
-    // Build event loop + window
     let event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
     let proxy = event_loop.create_proxy();
 
@@ -46,13 +40,17 @@ fn main() {
         .build(&event_loop)
         .expect("Failed to create window");
 
-    // Build child WebViews
+    // Build panels: dashboard (full width), toggle strip, sidebar (hidden)
     let dashboard = build_dashboard(&window, WINDOW_W, WINDOW_H);
+    let toggle = build_toggle_button(&window, WINDOW_W, WINDOW_H, proxy.clone());
     let sidebar = build_zalo_sidebar(&window, WINDOW_W, WINDOW_H);
+
+    // Sidebar starts collapsed
+    let mut sidebar_open = false;
 
     println!("Haviz đang chạy!");
     println!("   Dashboard: http://localhost:9999");
-    println!("   Zalo Web sidebar (phải)\n");
+    println!("   Click ◀ to open Zalo sidebar\n");
 
     // Periodic tick to drain the JS evaluation queue
     let proxy2 = proxy.clone();
@@ -61,41 +59,36 @@ fn main() {
         let _ = proxy2.send_event(UserEvent::ProcessJsQueue);
     });
 
-    // Event loop
+    // Track window size for resize events
+    let mut win_w = WINDOW_W;
+    let mut win_h = WINDOW_H;
+
     event_loop.run(move |event, _, control_flow| {
         *control_flow = ControlFlow::Wait;
 
         match event {
             Event::UserEvent(UserEvent::ProcessJsQueue) => {
-                // Drain pending JS evaluations onto the Zalo sidebar WebView
                 let mut queue = ZALO_JS_QUEUE.lock().unwrap();
                 for (js, tx) in queue.drain(..) {
                     match sidebar.evaluate_script(&js) {
-                        Ok(()) => {
-                            // wry evaluate_script is fire-and-forget; send "ok" as signal
-                            let _ = tx.send("ok".to_string());
-                        }
-                        Err(e) => {
-                            let _ = tx.send(format!("error:{}", e));
-                        }
+                        Ok(()) => { let _ = tx.send("ok".to_string()); }
+                        Err(e) => { let _ = tx.send(format!("error:{}", e)); }
                     }
                 }
+            }
+            Event::UserEvent(UserEvent::ToggleSidebar) => {
+                sidebar_open = !sidebar_open;
+                layout_panels(&dashboard, &toggle, &sidebar, win_w, win_h, sidebar_open);
+                update_toggle_arrow(&toggle, sidebar_open);
             }
             Event::WindowEvent { event, .. } => match event {
                 WindowEvent::CloseRequested => {
                     *control_flow = ControlFlow::Exit;
                 }
                 WindowEvent::Resized(new_size) => {
-                    let w = new_size.width as f64;
-                    let h = new_size.height as f64;
-                    let _ = dashboard.set_bounds(Rect {
-                        position: LogicalPosition::new(0.0, 0.0).into(),
-                        size: LogicalSize::new(w - SIDEBAR_W, h).into(),
-                    });
-                    let _ = sidebar.set_bounds(Rect {
-                        position: LogicalPosition::new(w - SIDEBAR_W, 0.0).into(),
-                        size: LogicalSize::new(SIDEBAR_W, h).into(),
-                    });
+                    win_w = new_size.width as f64;
+                    win_h = new_size.height as f64;
+                    layout_panels(&dashboard, &toggle, &sidebar, win_w, win_h, sidebar_open);
                 }
                 _ => {}
             },
@@ -104,7 +97,6 @@ fn main() {
     });
 }
 
-/// Load config, open database, build the full router, and start the HTTP server.
 async fn start_agent() {
     load_dotenv();
 

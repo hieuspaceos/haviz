@@ -33,4 +33,6 @@ pub fn eval_zalo_js(js: &str) -> Result<String, String> {
 pub enum UserEvent {
     /// Signals the event loop to drain ZALO_JS_QUEUE.
     ProcessJsQueue,
+    /// Toggle Zalo sidebar visibility (collapse/expand).
+    ToggleSidebar,
 }
