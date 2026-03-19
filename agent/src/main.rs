@@ -7,7 +7,11 @@ mod platform;
 mod polling;
 mod server;
 
+#[cfg(target_os = "macos")]
 use crate::channels::zalo_desktop::ZaloDesktopChannel;
+#[cfg(target_os = "windows")]
+use crate::channels::zalo_desktop_windows::WindowsZaloDesktop;
+
 use crate::config::Config;
 use crate::db::Database;
 use crate::polling::Poller;
@@ -42,18 +46,23 @@ async fn main() {
 
     tracing::info!("Haviz Agent v{}", env!("CARGO_PKG_VERSION"));
     tracing::info!("DB: {}", config.db_path.display());
-    tracing::info!("Zalo reader: {}", config.zalo_reader_path.display());
 
-    // Open database
     let db = Arc::new(
         Database::open(&config.db_path).expect("Failed to open database"),
     );
 
-    // Create Zalo Desktop channel
-    let channel = Box::new(ZaloDesktopChannel::new(
-        config.zalo_reader_path.to_string_lossy().to_string(),
-        config.my_name.clone(),
-    ));
+    // Create the platform-appropriate Zalo Desktop channel
+    #[cfg(target_os = "macos")]
+    let channel: Box<dyn crate::channels::traits::ChannelReader + Send> = Box::new(
+        ZaloDesktopChannel::new(
+            config.zalo_reader_path.to_string_lossy().to_string(),
+            config.my_name.clone(),
+        ),
+    );
+
+    #[cfg(target_os = "windows")]
+    let channel: Box<dyn crate::channels::traits::ChannelReader + Send> =
+        Box::new(WindowsZaloDesktop::new(config.my_name.clone()));
 
     // Start poller in background
     let db_poll = db.clone();
