@@ -8,6 +8,7 @@ use crate::db::Database;
 pub mod ai_draft;
 pub mod screenshot;
 pub mod zalo_control;
+pub mod zalo_scripts;
 
 /// Build the extended router with all non-base routes merged with the base router.
 pub fn extended_router(db: Arc<Database>) -> Router {

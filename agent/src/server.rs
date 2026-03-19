@@ -7,16 +7,28 @@ use axum::{
     Router,
 };
 use serde::Deserialize;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tower_http::cors::CorsLayer;
 
 use crate::auth::require_auth;
 use crate::db::Database;
 use crate::platform::macos::automation;
+use crate::safety::{SafetyEngine, SafetyResult};
+
+/// Shared application state passed to all route handlers.
+#[derive(Clone)]
+pub struct AppState {
+    pub db: Arc<Database>,
+    pub safety: Arc<Mutex<SafetyEngine>>,
+}
 
 type Db = Arc<Database>;
 
 pub fn create_router(db: Db) -> Router {
+    let state = AppState {
+        db: db.clone(),
+        safety: Arc::new(Mutex::new(SafetyEngine::new())),
+    };
     // Serve Svelte build output, fallback to agent/static/
     let project_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).parent().unwrap().to_path_buf();
     let static_dir = if project_root.join("apps/web/dist").exists() {
@@ -39,7 +51,6 @@ pub fn create_router(db: Db) -> Router {
         .route("/api/conversations/{id}/messages", get(get_messages))
         .route("/api/conversations/{id}/read", post(mark_read))
         .route("/api/messages/recent", get(recent_messages))
-        .route("/api/send", post(send_message))
         .route("/api/drafts", get(list_drafts))
         .route("/api/drafts/{id}/approve", post(approve_draft))
         .route("/api/drafts/{id}/reject", post(reject_draft))
@@ -48,11 +59,18 @@ pub fn create_router(db: Db) -> Router {
         .layer(middleware::from_fn(require_auth))
         .with_state(db);
 
+    // Send route uses AppState (includes safety engine)
+    let send_routes = Router::new()
+        .route("/api/send", post(send_message))
+        .layer(middleware::from_fn(require_auth))
+        .with_state(state);
+
     Router::new()
         // Public — no auth
         .route("/api/status", get(status))
         // Protected API routes
         .merge(protected)
+        .merge(send_routes)
         .fallback_service(tower_http::services::ServeDir::new(static_dir))
         .layer(cors)
 }
@@ -118,23 +136,27 @@ struct SendRequest {
 }
 
 async fn send_message(
+    State(state): State<AppState>,
     Json(req): Json<SendRequest>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
-    // TODO: integrate SafetyEngine.check() before send.
-    // Example (SafetyEngine would live in app State as Arc<Mutex<SafetyEngine>>):
-    //
-    //   let mut engine = state.safety_engine.lock().await;
-    //   match engine.check(&req.to, &req.message) {
-    //       SafetyResult::Allow => { /* proceed */ }
-    //       SafetyResult::Queue { reason, send_at } => {
-    //           return Ok(Json(json!({ "ok": false, "queued": true,
-    //               "reason": reason, "send_at": send_at.to_rfc3339() })));
-    //       }
-    //       SafetyResult::Block { reason } => {
-    //           return Err(StatusCode::FORBIDDEN);  // or json error body
-    //       }
-    //   }
-    //   // After send: engine.record_send_result(ok, &req.to, &req.message);
+    // Safety check before sending
+    {
+        let mut engine = state.safety.lock().unwrap();
+        match engine.check(&req.to, &req.message) {
+            SafetyResult::Allow => { /* proceed */ }
+            SafetyResult::Queue { reason, send_at } => {
+                return Ok(Json(serde_json::json!({
+                    "ok": false, "queued": true,
+                    "reason": reason, "send_at": send_at.to_rfc3339()
+                })));
+            }
+            SafetyResult::Block { reason } => {
+                return Ok(Json(serde_json::json!({
+                    "ok": false, "blocked": true, "reason": reason
+                })));
+            }
+        }
+    }
 
     // Run AppleScript in blocking task (it takes several seconds)
     let to = req.to.clone();
@@ -144,6 +166,13 @@ async fn send_message(
     })
     .await
     .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    // Record result for health scoring
+    let success = result.is_ok();
+    {
+        let mut engine = state.safety.lock().unwrap();
+        engine.record_send_result(success, &req.to, &req.message);
+    }
 
     match result {
         Ok(()) => Ok(Json(serde_json::json!({ "ok": true, "to": req.to, "message": req.message }))),
