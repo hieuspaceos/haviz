@@ -53,6 +53,7 @@ pub async fn zalo_conversations_handler() -> Json<serde_json::Value> {
 }
 
 /// GET /api/zalo/messages — scroll up to load history, then extract messages.
+/// (Legacy: live WebView snapshot only, no DB accumulation.)
 pub async fn zalo_messages_handler() -> Json<serde_json::Value> {
     // Scroll up to load older messages from the transform-gpu chat container
     let _ = eval_zalo_js(js::JS_SCROLL_UP_CHAT);

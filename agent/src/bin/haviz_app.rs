@@ -117,6 +117,29 @@ async fn start_agent() {
         haviz_agent::db::Database::open(&config.db_path).expect("Failed to open DB"),
     );
 
+    // Background task: accumulate Zalo WebView messages into SQLite every 3s.
+    // Runs JS_EXTRACT_MESSAGES via eval_zalo_js, parses IPC result, inserts new rows.
+    let db_acc = db.clone();
+    let poll_secs = config.poll_interval_secs;
+    tokio::spawn(async move {
+        let interval = std::time::Duration::from_secs(poll_secs);
+        loop {
+            tokio::time::sleep(interval).await;
+            let db_ref = db_acc.clone();
+            // Run blocking DB + IPC work off the async executor
+            tokio::task::spawn_blocking(move || {
+                match haviz_agent::routes::zalo_accumulator::accumulate_once(&db_ref) {
+                    Ok(0) => {} // nothing new — silent
+                    Ok(n) => tracing::info!("[webview-poll] stored {} new messages", n),
+                    Err(e) if e == "zalo_not_ready" => {} // Zalo not open — silent
+                    Err(e) => tracing::warn!("[webview-poll] accumulate error: {}", e),
+                }
+            })
+            .await
+            .ok();
+        }
+    });
+
     let app = extended_router(db);
 
     let addr = format!("0.0.0.0:{}", config.http_port);
