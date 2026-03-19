@@ -1,0 +1,78 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  # ── JS/TS: API + Web ───────────────────────────────────────────────────────
+  api-and-web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Type check API
+        run: pnpm --filter @haviz/api build
+
+      - name: Type check Web
+        run: pnpm --filter web check
+
+      - name: Test API
+        run: pnpm --filter @haviz/api test
+
+      - name: Test Web
+        run: pnpm --filter web test
+
+  # ── Rust Agent (macOS) ─────────────────────────────────────────────────────
+  agent-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: agent
+
+      - name: Check
+        run: cargo check
+        working-directory: agent
+
+      - name: Test
+        run: cargo test
+        working-directory: agent
+
+  # ── Rust Agent (Windows) ───────────────────────────────────────────────────
+  agent-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: agent
+
+      - name: Check
+        run: cargo check
+        working-directory: agent
+
+      - name: Test
+        run: cargo test
+        working-directory: agent
