@@ -52,15 +52,28 @@ pub const JS_EXTRACT_MESSAGES: &str = r#"(function(){
         'Gửi nhanh','Đồng bộ ngay','Hôm nay','Hôm qua','Đã gửi','Đã xem',
         'Xem trước khi gửi','Thả File hoặc Ảnh vào đây để gửi nhanh',
         'Thả File hoặc Ảnh vào đây để xem lại trước khi gửi',
-        'phút','giờ','ngày','thành viên','Nodaking',
+        'phút','giờ','ngày','thành viên',
         'Sử dụng Zalo PC để lưu trữ dài hạn và dễ dàng tìm kiếm đầy đủ dữ liệu trò chuyện của bạn.',
         'Hình ảnh','Video','File','Link','Bình chọn',
+        'Đồng bộ tin nhắn gần đây','Nhấn để đồng bộ ngay','Chưa có tin nhắn',
+        'Đã nhận','Đã đọc','Vài giây','Đang gửi','Đang tải',
+        'ghim','Nhấn để xem','Nhấn để tải','Tải xuống','Đang kết nối',
+        'Tin nhắn đã được thu hồi','Thu hồi tin nhắn',
+        'Zalo Web của bạn hiện chưa có đầy đủ tin nhắn gần đây',
+        'Trả lời','Chuyển tiếp','Chia sẻ','Ghim tin nhắn','Thu hồi',
     ]);
+    var skipRe=/^[\d\s]*phút$|^[\d\s]*giờ$|^[\d\s]*ngày$|^\+\d+\s*ghim$|^Vài giây$|^T\d+$/;
     var emojiRe=/^[\/:][a-z-]+$|^[\/:][a-z][\w-]*$/;
     var timeRe=/^\d{1,2}:\d{2}$/;
     var shortRe=/^\d+$/;
     var memberRe=/^\d+\s*thành viên$/;
     var validTags=new Set(['SPAN','DIV','P','A','EM','STRONG','B','I']);
+
+    // Strategy: scan full DOM but use position-based filtering.
+    // Zalo Web layout: sidebar on left (~300px), chat area takes the rest.
+    // Only extract text from elements positioned in the chat area (x > 300px).
+    var winW=window.innerWidth;
+    var sidebarCutoff=Math.min(350, winW*0.25);
     var all=document.querySelectorAll('*');
     for(var i=0;i<all.length;i++){
         var el=all[i];
@@ -68,7 +81,13 @@ pub const JS_EXTRACT_MESSAGES: &str = r#"(function(){
         if(!validTags.has(el.tagName))continue;
         var text=el.textContent?el.textContent.trim():'';
         if(text.length<2||text.length>500)continue;
+        // Position filter: only elements in chat area (right of sidebar)
+        var rect=el.getBoundingClientRect();
+        if(rect.left<sidebarCutoff)continue;
+        // Skip elements at very top (header) or very bottom (input area)
+        if(rect.top<50||rect.bottom>window.innerHeight-60)continue;
         if(skip.has(text))continue;
+        if(skipRe.test(text))continue;
         if(emojiRe.test(text))continue;
         if(timeRe.test(text))continue;
         if(shortRe.test(text))continue;
@@ -77,14 +96,19 @@ pub const JS_EXTRACT_MESSAGES: &str = r#"(function(){
         if(text.length<=3&&/^[:;]/.test(text))continue;
         var cls=(typeof el.className==='string')?el.className:'';
         if(cls.indexOf('lb-tab')>=0||cls.indexOf('banner')>=0||cls.indexOf('fake-text')>=0)continue;
+        if(cls.indexOf('conv-dbname')>=0||cls.indexOf('conv-name')>=0)continue;
+        if(text.endsWith(':')&&text.length<30)continue;
         var content=text;
-        if(cls.indexOf('conv-dbname')>=0||text.endsWith(':'))continue;
         content=content.replace(/\/?-strong/g,'').replace(/\/?-heart/g,'')
             .replace(/:>/g,'').replace(/:o/g,'').replace(/:-\(\(/g,'').replace(/:-h/g,'')
             .replace(/\d{1,2}:\d{2}/g,'').replace(/Đã gửi/g,'').replace(/Đã xem/g,'')
             .trim();
         if(!content||content.length<2)continue;
-        messages.push({sender:'',content:content,class:cls.substring(0,40)});
+        // Determine direction: elements aligned right = outbound, left = inbound
+        var midX=rect.left+rect.width/2;
+        var chatMid=(sidebarCutoff+winW)/2;
+        var dir=midX>chatMid?'outbound':'inbound';
+        messages.push({sender:'',content:content,class:cls.substring(0,40),direction:dir});
     }
     var seen=new Set();
     var unique=[];
@@ -93,8 +117,35 @@ pub const JS_EXTRACT_MESSAGES: &str = r#"(function(){
         if(!seen.has(key)){seen.add(key);unique.unshift(messages[j]);}
     }
     if(window.ipc&&window.ipc.postMessage){
-        window.ipc.postMessage(JSON.stringify(unique.slice(-20)));
+        window.ipc.postMessage(JSON.stringify(unique.slice(-50)));
     }
+})();"#;
+
+/// Scrolls the chat container up multiple times to trigger Zalo lazy-loading
+/// of older messages. After scrolling, waits briefly then extracts messages.
+/// Call this before JS_EXTRACT_MESSAGES for more complete history.
+pub const JS_SCROLL_UP_CHAT: &str = r#"(function(){
+    // Find scrollable chat container by looking for tall scrollable divs
+    // positioned in the chat area (right of sidebar)
+    var sidebarCutoff=Math.min(350,window.innerWidth*0.25);
+    var all=document.querySelectorAll('div');
+    var chat=null;var bestScore=0;
+    for(var i=0;i<all.length;i++){
+        var el=all[i];
+        if(el.scrollHeight<=el.clientHeight+10)continue;
+        var r=el.getBoundingClientRect();
+        if(r.left<sidebarCutoff)continue;
+        if(r.height<200||r.width<200)continue;
+        var score=r.height*(el.scrollHeight-el.clientHeight);
+        if(score>bestScore){bestScore=score;chat=el;}
+    }
+    if(!chat)return;
+    var scrollCount=0;
+    var timer=setInterval(function(){
+        chat.scrollTop=0;
+        scrollCount++;
+        if(scrollCount>=5){clearInterval(timer);}
+    },400);
 })();"#;
 
 /// Clears the search input field.

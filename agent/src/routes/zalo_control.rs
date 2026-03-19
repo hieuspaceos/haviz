@@ -52,8 +52,13 @@ pub async fn zalo_conversations_handler() -> Json<serde_json::Value> {
     }
 }
 
-/// GET /api/zalo/messages — extract visible chat messages.
+/// GET /api/zalo/messages — scroll up to load history, then extract messages.
 pub async fn zalo_messages_handler() -> Json<serde_json::Value> {
+    // Scroll up to trigger Zalo lazy-loading of older messages
+    let _ = eval_zalo_js(js::JS_SCROLL_UP_CHAT);
+    // Wait for scrolls to complete and Zalo to render older messages
+    std::thread::sleep(std::time::Duration::from_millis(2500));
+
     *ZALO_MESSAGES.lock().unwrap() = None;
     let _ = eval_zalo_js(js::JS_EXTRACT_MESSAGES);
     let data = wait_for_ipc(&ZALO_MESSAGES);
