@@ -22,4 +22,5 @@ pub fn extended_router(db: Arc<Database>) -> Router {
         .route("/api/zalo/open", post(zalo_control::zalo_open_handler))
         .route("/api/zalo/send", post(zalo_control::zalo_send_handler))
         .route("/api/zalo/search-and-send", post(zalo_control::zalo_search_and_send_handler))
+        .route("/api/zalo/debug", get(zalo_control::zalo_debug_handler))
 }

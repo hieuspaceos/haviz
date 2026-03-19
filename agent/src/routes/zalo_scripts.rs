@@ -69,23 +69,42 @@ pub const JS_EXTRACT_MESSAGES: &str = r#"(function(){
     var memberRe=/^\d+\s*thành viên$/;
     var validTags=new Set(['SPAN','DIV','P','A','EM','STRONG','B','I']);
 
-    // Strategy: scan full DOM but use position-based filtering.
-    // Zalo Web layout: sidebar on left (~300px), chat area takes the rest.
-    // Only extract text from elements positioned in the chat area (x > 300px).
-    var winW=window.innerWidth;
-    var sidebarCutoff=Math.min(350, winW*0.25);
-    var all=document.querySelectorAll('*');
+    // Find the chat message container. In Zalo Web, the message area uses
+    // class "transform-gpu" or contains "message" elements. We look for
+    // a scrollable div that contains message-like children, preferring
+    // containers with message/chat related classes over generic ones.
+    var chatBox=null;var bestScore=0;
+    var divs=document.querySelectorAll('div');
+    for(var d=0;d<divs.length;d++){
+        var div=divs[d];
+        var sh=div.scrollHeight;var ch=div.clientHeight;
+        if(sh<=ch+10)continue;
+        var r=div.getBoundingClientRect();
+        if(r.height<100||r.width<100)continue;
+        var cls=(typeof div.className==='string')?div.className:'';
+        var score=r.height*(sh-ch);
+        // Boost score for containers with message-related classes
+        if(cls.indexOf('transform-gpu')>=0)score*=10;
+        if(cls.indexOf('message')>=0||cls.indexOf('chat-body')>=0)score*=10;
+        // Penalize the conversation list (has many truncate children)
+        var truncates=div.querySelectorAll('.truncate');
+        if(truncates.length>3)score*=0.01;
+        if(score>bestScore){bestScore=score;chatBox=div;}
+    }
+    // If no scrollable container found, bail out
+    if(!chatBox){
+        if(window.ipc&&window.ipc.postMessage){
+            window.ipc.postMessage(JSON.stringify([]));
+        }
+        return;
+    }
+    var all=chatBox.querySelectorAll('*');
     for(var i=0;i<all.length;i++){
         var el=all[i];
         if(el.children.length>0)continue;
         if(!validTags.has(el.tagName))continue;
         var text=el.textContent?el.textContent.trim():'';
         if(text.length<2||text.length>500)continue;
-        // Position filter: only elements in chat area (right of sidebar)
-        var rect=el.getBoundingClientRect();
-        if(rect.left<sidebarCutoff)continue;
-        // Skip elements at very top (header) or very bottom (input area)
-        if(rect.top<50||rect.bottom>window.innerHeight-60)continue;
         if(skip.has(text))continue;
         if(skipRe.test(text))continue;
         if(emojiRe.test(text))continue;
@@ -104,11 +123,7 @@ pub const JS_EXTRACT_MESSAGES: &str = r#"(function(){
             .replace(/\d{1,2}:\d{2}/g,'').replace(/Đã gửi/g,'').replace(/Đã xem/g,'')
             .trim();
         if(!content||content.length<2)continue;
-        // Determine direction: elements aligned right = outbound, left = inbound
-        var midX=rect.left+rect.width/2;
-        var chatMid=(sidebarCutoff+winW)/2;
-        var dir=midX>chatMid?'outbound':'inbound';
-        messages.push({sender:'',content:content,class:cls.substring(0,40),direction:dir});
+        messages.push({sender:'',content:content,class:cls.substring(0,40)});
     }
     var seen=new Set();
     var unique=[];
@@ -118,6 +133,29 @@ pub const JS_EXTRACT_MESSAGES: &str = r#"(function(){
     }
     if(window.ipc&&window.ipc.postMessage){
         window.ipc.postMessage(JSON.stringify(unique.slice(-50)));
+    }
+})();"#;
+
+/// Debug: dump scrollable divs and their classes/sizes to help find chat container.
+pub const JS_DEBUG_DOM: &str = r#"(function(){
+    var info={url:location.href,width:window.innerWidth,height:window.innerHeight};
+    var scrollables=[];
+    var divs=document.querySelectorAll('div');
+    for(var i=0;i<divs.length;i++){
+        var d=divs[i];
+        if(d.scrollHeight<=d.clientHeight+10)continue;
+        var r=d.getBoundingClientRect();
+        if(r.height<50)continue;
+        var cls=(typeof d.className==='string')?d.className.substring(0,80):'';
+        scrollables.push({cls:cls,w:Math.round(r.width),h:Math.round(r.height),
+            sh:d.scrollHeight,children:d.children.length});
+    }
+    info.scrollables=scrollables;
+    // Also check if contenteditable exists (indicates chat is open)
+    var ce=document.querySelector('[contenteditable="true"]');
+    info.chatInputFound=!!ce;
+    if(window.ipc&&window.ipc.postMessage){
+        window.ipc.postMessage(JSON.stringify(info));
     }
 })();"#;
 
