@@ -200,7 +200,7 @@
           </button>
           <button
             class="px-3 py-1.5 text-xs rounded bg-[var(--warning)] text-black hover:opacity-90"
-            on:click={() => { document.querySelector('#draftTextarea')?.focus(); addLog('Editing draft...'); }}
+            on:click={() => { (document.querySelector('#draftTextarea') as HTMLElement)?.focus(); addLog('Editing draft...'); }}
           >
             Edit
           </button>

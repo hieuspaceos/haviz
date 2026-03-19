@@ -3,7 +3,7 @@
   "name": "Haviz - Zalo Reader",
   "version": "0.3",
   "description": "Đọc và gửi tin nhắn Zalo Web",
-  "permissions": ["activeTab"],
+  "permissions": ["activeTab", "storage"],
   "content_scripts": [
     {
       "matches": ["https://chat.zalo.me/*"],

@@ -1,6 +1,7 @@
 use axum::{
     extract::{Path, Query, State},
-    http::StatusCode,
+    http::{header, Method, StatusCode},
+    middleware,
     response::Json,
     routing::{get, post},
     Router,
@@ -9,6 +10,7 @@ use serde::Deserialize;
 use std::sync::Arc;
 use tower_http::cors::CorsLayer;
 
+use crate::auth::require_auth;
 use crate::db::Database;
 use crate::platform::macos::automation;
 
@@ -23,8 +25,16 @@ pub fn create_router(db: Db) -> Router {
         std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("static")
     };
 
-    Router::new()
-        .route("/api/status", get(status))
+    let cors = CorsLayer::new()
+        .allow_origin([
+            "http://localhost:3333".parse().unwrap(),
+            "http://localhost:9999".parse().unwrap(),
+        ])
+        .allow_methods([Method::GET, Method::POST, Method::PATCH, Method::DELETE])
+        .allow_headers([header::CONTENT_TYPE, header::AUTHORIZATION]);
+
+    // Protected routes — require Bearer token when AGENT_AUTH_TOKEN is set
+    let protected = Router::new()
         .route("/api/conversations", get(list_conversations))
         .route("/api/conversations/{id}/messages", get(get_messages))
         .route("/api/conversations/{id}/read", post(mark_read))
@@ -35,9 +45,16 @@ pub fn create_router(db: Db) -> Router {
         .route("/api/drafts/{id}/reject", post(reject_draft))
         .route("/api/templates", get(list_templates))
         .route("/api/templates", post(create_template))
+        .layer(middleware::from_fn(require_auth))
+        .with_state(db);
+
+    Router::new()
+        // Public — no auth
+        .route("/api/status", get(status))
+        // Protected API routes
+        .merge(protected)
         .fallback_service(tower_http::services::ServeDir::new(static_dir))
-        .layer(CorsLayer::permissive())
-        .with_state(db)
+        .layer(cors)
 }
 
 // === Status ===
@@ -103,6 +120,22 @@ struct SendRequest {
 async fn send_message(
     Json(req): Json<SendRequest>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
+    // TODO: integrate SafetyEngine.check() before send.
+    // Example (SafetyEngine would live in app State as Arc<Mutex<SafetyEngine>>):
+    //
+    //   let mut engine = state.safety_engine.lock().await;
+    //   match engine.check(&req.to, &req.message) {
+    //       SafetyResult::Allow => { /* proceed */ }
+    //       SafetyResult::Queue { reason, send_at } => {
+    //           return Ok(Json(json!({ "ok": false, "queued": true,
+    //               "reason": reason, "send_at": send_at.to_rfc3339() })));
+    //       }
+    //       SafetyResult::Block { reason } => {
+    //           return Err(StatusCode::FORBIDDEN);  // or json error body
+    //       }
+    //   }
+    //   // After send: engine.record_send_result(ok, &req.to, &req.message);
+
     // Run AppleScript in blocking task (it takes several seconds)
     let to = req.to.clone();
     let msg = req.message.clone();

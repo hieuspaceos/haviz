@@ -10,6 +10,7 @@ pub struct Config {
     pub groq_api_key: Option<String>,
     pub chrome_path: Option<PathBuf>,
     pub zalo_web_enabled: bool,
+    pub agent_auth_token: Option<String>,
 }
 
 impl Config {
@@ -30,6 +31,7 @@ impl Config {
             groq_api_key: std::env::var("GROQ_API_KEY").ok(),
             chrome_path: std::env::var("HAVIZ_CHROME_PATH").ok().map(PathBuf::from),
             zalo_web_enabled: env_or("HAVIZ_ZALO_WEB", "false") == "true",
+            agent_auth_token: std::env::var("AGENT_AUTH_TOKEN").ok(),
         }
     }
 }

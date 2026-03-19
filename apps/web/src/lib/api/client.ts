@@ -1,16 +1,49 @@
+import { supabase } from '../auth/supabase-client.js';
+
 const API_BASE = '/api';
 
+/** Resolve auth token: agent-injected token takes priority over Supabase session. */
+async function getAuthToken(): Promise<string | null> {
+  // When embedded in the Agent webview, a token is injected into the window
+  const injected = (window as unknown as Record<string, unknown>)['__haviz_agent_token'];
+  if (typeof injected === 'string' && injected) return injected;
+
+  // Otherwise use the current Supabase session token
+  const { data } = await supabase.auth.getSession();
+  return data.session?.access_token ?? null;
+}
+
 async function get<T>(path: string): Promise<T> {
-  const res = await fetch(`${API_BASE}${path}`);
+  const token = await getAuthToken();
+  const headers: Record<string, string> = {};
+  if (token) headers['Authorization'] = `Bearer ${token}`;
+
+  const res = await fetch(`${API_BASE}${path}`, { headers });
+
+  if (res.status === 401) {
+    await supabase.auth.signOut();
+    window.location.reload();
+  }
+
   return res.json();
 }
 
 async function post<T>(path: string, body?: unknown): Promise<T> {
+  const token = await getAuthToken();
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (token) headers['Authorization'] = `Bearer ${token}`;
+
   const res = await fetch(`${API_BASE}${path}`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers,
     body: body ? JSON.stringify(body) : undefined,
   });
+
+  if (res.status === 401) {
+    await supabase.auth.signOut();
+    window.location.reload();
+  }
+
   return res.json();
 }
 
