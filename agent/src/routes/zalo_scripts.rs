@@ -171,14 +171,17 @@ pub const JS_DEBUG_DOM: &str = r#"(function(){
 /// Auto-click "Kích hoạt" button when Zalo shows the multi-tab warning.
 /// Runs periodically to dismiss the warning automatically.
 pub const JS_AUTO_ACTIVATE: &str = r#"(function(){
-    var all=document.querySelectorAll('button,a,div,span,[role="button"]');
+    // Target the Zalo modal activate button directly by class
+    var btn=document.querySelector('.z--btn--v2.btn-primary');
+    if(btn){btn.click();return;}
+    // Fallback: find element in modal footer
+    var footer=document.querySelector('.zl-modal__footer');
+    if(footer){footer.querySelector('div').click();return;}
+    // Last resort: find any element with exact "Kích hoạt" text
+    var all=document.querySelectorAll('div,button,a,span');
     for(var i=0;i<all.length;i++){
-        var el=all[i];
-        var t=el.textContent?el.textContent.trim():'';
-        if(t==='Kích hoạt'||t==='Activate'){
-            el.click();
-            return;
-        }
+        var t=all[i].textContent?all[i].textContent.trim():'';
+        if(t==='Kích hoạt'){all[i].click();return;}
     }
 })();"#;
 

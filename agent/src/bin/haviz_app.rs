@@ -59,12 +59,16 @@ fn main() {
         let _ = proxy2.send_event(UserEvent::ProcessJsQueue);
     });
 
-    // Auto-click "Kích hoạt" every 5s to dismiss Zalo multi-tab warning
+    // Auto-click "Kích hoạt" every 5s to dismiss Zalo multi-tab warning.
+    // Uses fire-and-forget (non-blocking) to avoid thread stalling on timeout.
     std::thread::spawn(|| loop {
         std::thread::sleep(std::time::Duration::from_secs(5));
-        let _ = haviz_agent::app::ipc::eval_zalo_js(
-            haviz_agent::routes::zalo_scripts::JS_AUTO_ACTIVATE
-        );
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut queue = haviz_agent::app::ipc::ZALO_JS_QUEUE.lock().unwrap();
+        queue.push((
+            haviz_agent::routes::zalo_scripts::JS_AUTO_ACTIVATE.to_string(),
+            tx,
+        ));
     });
 
     // Track window size for resize events
