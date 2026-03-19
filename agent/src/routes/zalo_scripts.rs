@@ -189,27 +189,31 @@ pub const JS_AUTO_ACTIVATE: &str = r#"(function(){
 /// of older messages. After scrolling, waits briefly then extracts messages.
 /// Call this before JS_EXTRACT_MESSAGES for more complete history.
 pub const JS_SCROLL_UP_CHAT: &str = r#"(function(){
-    // Find scrollable chat container by looking for tall scrollable divs
-    // positioned in the chat area (right of sidebar)
-    var sidebarCutoff=Math.min(350,window.innerWidth*0.25);
-    var all=document.querySelectorAll('div');
+    // Find chat container using same heuristic as message extraction
+    var divs=document.querySelectorAll('div');
     var chat=null;var bestScore=0;
-    for(var i=0;i<all.length;i++){
-        var el=all[i];
-        if(el.scrollHeight<=el.clientHeight+10)continue;
-        var r=el.getBoundingClientRect();
-        if(r.left<sidebarCutoff)continue;
-        if(r.height<200||r.width<200)continue;
-        var score=r.height*(el.scrollHeight-el.clientHeight);
-        if(score>bestScore){bestScore=score;chat=el;}
+    for(var d=0;d<divs.length;d++){
+        var div=divs[d];
+        var sh=div.scrollHeight;var ch=div.clientHeight;
+        if(sh<=ch+10)continue;
+        var r=div.getBoundingClientRect();
+        if(r.height<100||r.width<100)continue;
+        var cls=(typeof div.className==='string')?div.className:'';
+        var score=r.height*(sh-ch);
+        if(cls.indexOf('transform-gpu')>=0)score*=10;
+        if(cls.indexOf('message')>=0)score*=10;
+        var truncates=div.querySelectorAll('.truncate');
+        if(truncates.length>3)score*=0.01;
+        if(score>bestScore){bestScore=score;chat=div;}
     }
     if(!chat)return;
+    // Scroll up 8 times with 300ms interval to load older messages
     var scrollCount=0;
     var timer=setInterval(function(){
         chat.scrollTop=0;
         scrollCount++;
-        if(scrollCount>=5){clearInterval(timer);}
-    },400);
+        if(scrollCount>=8){clearInterval(timer);}
+    },300);
 })();"#;
 
 /// Clears the search input field.

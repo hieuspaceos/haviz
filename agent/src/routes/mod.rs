@@ -26,7 +26,9 @@ pub fn extended_router(db: Arc<Database>) -> Router {
 
     // Windows-only: Zalo Desktop UI Automation route
     #[cfg(target_os = "windows")]
-    let router = router.route("/api/zalo/desktop", get(zalo_control::zalo_desktop_handler));
+    let router = router
+        .route("/api/zalo/desktop", get(zalo_control::zalo_desktop_handler))
+        .route("/api/zalo/clipboard", get(zalo_control::zalo_clipboard_handler));
 
     router
 }

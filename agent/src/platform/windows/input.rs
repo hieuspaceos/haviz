@@ -7,18 +7,22 @@ use std::time::Duration;
 
 use windows::Win32::Foundation::{HANDLE, HWND};
 use windows::Win32::System::DataExchange::{
-    CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData,
+    CloseClipboard, EmptyClipboard, GetClipboardData, OpenClipboard, SetClipboardData,
 };
-use windows::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE};
+use windows::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalSize, GlobalUnlock, GMEM_MOVEABLE};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP,
-    VIRTUAL_KEY, VK_CONTROL, VK_RETURN,
+    SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT,
+    KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP,
+    MOUSEINPUT, VIRTUAL_KEY, VK_CONTROL, VK_RETURN,
 };
-use windows::Win32::UI::WindowsAndMessaging::{SetForegroundWindow, ShowWindow, SW_RESTORE};
+use windows::Win32::UI::WindowsAndMessaging::{
+    GetWindowRect, SetForegroundWindow, ShowWindow, SW_RESTORE,
+};
 
 use super::uiautomation::find_zalo_window;
 
-// VK_F (0x46) and VK_V (0x56) are not named constants in the windows crate
+const VK_A_CODE: u16 = 0x41;
+const VK_C_CODE: u16 = 0x43;
 const VK_F_CODE: u16 = 0x46;
 const VK_V_CODE: u16 = 0x56;
 
@@ -149,6 +153,112 @@ fn bring_to_foreground(hwnd: HWND) {
         let _ = ShowWindow(hwnd, SW_RESTORE);
         let _ = SetForegroundWindow(hwnd);
     }
+}
+
+// ---------------------------------------------------------------------------
+// Clipboard reading
+// ---------------------------------------------------------------------------
+
+/// Read UTF-16 text from the Windows clipboard.
+pub fn get_clipboard() -> Result<String, String> {
+    use windows::Win32::Foundation::{HANDLE as WinHandle, HGLOBAL};
+    unsafe {
+        OpenClipboard(HWND(std::ptr::null_mut()))
+            .map_err(|e| format!("OpenClipboard failed: {}", e))?;
+        let handle: WinHandle = GetClipboardData(CF_UNICODETEXT)
+            .map_err(|e| { let _ = CloseClipboard(); format!("GetClipboardData failed: {}", e) })?;
+        let hglobal = HGLOBAL(handle.0);
+        let ptr = GlobalLock(hglobal) as *const u16;
+        if ptr.is_null() {
+            let _ = CloseClipboard();
+            return Err("GlobalLock returned null".to_string());
+        }
+        let size = GlobalSize(hglobal);
+        let len = size / 2;
+        let slice = std::slice::from_raw_parts(ptr, len);
+        let text = String::from_utf16_lossy(slice).trim_end_matches('\0').to_string();
+        let _ = GlobalUnlock(hglobal);
+        let _ = CloseClipboard();
+        Ok(text)
+    }
+}
+
+/// Read chat messages from Zalo Desktop via click → Ctrl+A → Ctrl+C → clipboard.
+/// Clicks in the chat message area (center-right of window), selects all, copies.
+pub fn read_chat_via_clipboard() -> Result<String, String> {
+    let hwnd_val = find_zalo_window()?;
+    let hwnd = HWND(hwnd_val as *mut std::ffi::c_void);
+
+    // Clear clipboard first so we know if copy worked
+    unsafe {
+        let _ = OpenClipboard(HWND(std::ptr::null_mut()));
+        let _ = EmptyClipboard();
+        let _ = CloseClipboard();
+    }
+
+    bring_to_foreground(hwnd);
+    thread::sleep(Duration::from_millis(1000));
+
+    // Get window rect to calculate click position in chat area
+    // Zalo layout: sidebar (~300px left) + chat area (rest)
+    let mut rect = windows::Win32::Foundation::RECT::default();
+    unsafe { let _ = GetWindowRect(hwnd, &mut rect); }
+    let win_w = (rect.right - rect.left) as i32;
+    let win_h = (rect.bottom - rect.top) as i32;
+
+    // Click at 70% from left, 50% from top — center of chat messages area
+    let click_x = rect.left + (win_w as f64 * 0.70) as i32;
+    let click_y = rect.top + (win_h as f64 * 0.50) as i32;
+
+    // Double-click to ensure focus lands in message area (not sidebar/input)
+    click_at(click_x, click_y)?;
+    thread::sleep(Duration::from_millis(200));
+    click_at(click_x, click_y)?;
+    thread::sleep(Duration::from_millis(300));
+
+    // Ctrl+A to select all messages in the chat area
+    send_key_combo(VK_CONTROL.0, VK_A_CODE)?;
+    thread::sleep(Duration::from_millis(300));
+    // Ctrl+C to copy
+    send_key_combo(VK_CONTROL.0, VK_C_CODE)?;
+    thread::sleep(Duration::from_millis(500));
+
+    // Click somewhere neutral to deselect (avoid visual artifacts)
+    click_at(click_x, click_y)?;
+
+    get_clipboard()
+}
+
+/// Click at absolute screen coordinates.
+fn click_at(x: i32, y: i32) -> Result<(), String> {
+    // SetCursorPos is in WindowsAndMessaging
+    unsafe {
+        windows::Win32::UI::WindowsAndMessaging::SetCursorPos(x, y)
+            .map_err(|e| format!("SetCursorPos failed: {}", e))?;
+    }
+    let inputs = [
+        INPUT {
+            r#type: INPUT_MOUSE,
+            Anonymous: INPUT_0 {
+                mi: MOUSEINPUT {
+                    dx: 0, dy: 0, mouseData: 0, time: 0, dwExtraInfo: 0,
+                    dwFlags: MOUSEEVENTF_LEFTDOWN,
+                },
+            },
+        },
+        INPUT {
+            r#type: INPUT_MOUSE,
+            Anonymous: INPUT_0 {
+                mi: MOUSEINPUT {
+                    dx: 0, dy: 0, mouseData: 0, time: 0, dwExtraInfo: 0,
+                    dwFlags: MOUSEEVENTF_LEFTUP,
+                },
+            },
+        },
+    ];
+    let sent = unsafe { SendInput(&inputs, std::mem::size_of::<INPUT>() as i32) };
+    if sent != 2 { return Err("click SendInput failed".to_string()); }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------

@@ -54,7 +54,9 @@ pub async fn zalo_conversations_handler() -> Json<serde_json::Value> {
 
 /// GET /api/zalo/messages — scroll up to load history, then extract messages.
 pub async fn zalo_messages_handler() -> Json<serde_json::Value> {
-    // Skip auto-scroll for now — it may navigate away from the open chat
+    // Scroll up to load older messages from the transform-gpu chat container
+    let _ = eval_zalo_js(js::JS_SCROLL_UP_CHAT);
+    std::thread::sleep(std::time::Duration::from_millis(3000));
     *ZALO_MESSAGES.lock().unwrap() = None;
     let _ = eval_zalo_js(js::JS_EXTRACT_MESSAGES);
     let data = wait_for_ipc(&ZALO_MESSAGES);
@@ -107,6 +109,28 @@ pub async fn zalo_desktop_handler() -> Json<serde_json::Value> {
             }
         }
         Err(e) => Json(serde_json::json!({ "ok": false, "error": e })),
+    }
+}
+
+/// GET /api/zalo/clipboard — read Zalo Desktop chat via Ctrl+A, Ctrl+C, clipboard.
+#[cfg(target_os = "windows")]
+pub async fn zalo_clipboard_handler() -> Json<serde_json::Value> {
+    let result = tokio::task::spawn_blocking(|| {
+        crate::platform::windows::input::read_chat_via_clipboard()
+    }).await;
+    match result {
+        Ok(Ok(text)) => {
+            let lines: Vec<&str> = text.lines()
+                .filter(|l| !l.trim().is_empty())
+                .collect();
+            Json(serde_json::json!({
+                "ok": true, "source": "clipboard",
+                "raw_lines": lines.len(),
+                "text": text.chars().take(5000).collect::<String>(),
+            }))
+        }
+        Ok(Err(e)) => Json(serde_json::json!({ "ok": false, "error": e })),
+        Err(e) => Json(serde_json::json!({ "ok": false, "error": e.to_string() })),
     }
 }
 
