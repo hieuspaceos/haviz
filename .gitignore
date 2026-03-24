@@ -8,3 +8,4 @@ dist/
 target/
 *.swp
 *.swo
+repomix-output.xml
